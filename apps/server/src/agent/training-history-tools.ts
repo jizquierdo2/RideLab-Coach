@@ -56,5 +56,9 @@ export function getTrainingRecordTool(
   entries: readonly ChatTrainingHistoryEntry[],
   args: GetTrainingRecordArgs,
 ): ChatTrainingHistoryEntry | null {
-  return entries.find((entry) => entry.plannedSessionId === args.sessionId) ?? null;
+  // Una sesión repetida crea una entrada nueva con el mismo `plannedSessionId`:
+  // se toma la más reciente por fecha, no la primera, para no devolver un
+  // registro obsoleto cuando ya existe una repetición más nueva.
+  const matches = entries.filter((entry) => entry.plannedSessionId === args.sessionId);
+  return matches.length > 0 ? matches[matches.length - 1] : null;
 }

@@ -27,6 +27,10 @@ class FakeConnectableProvider implements ConnectableGarminProvider {
     return [];
   }
 
+  async getPerformanceSnapshot(): Promise<never> {
+    throw new Error("no usado en estos tests");
+  }
+
   async verifyLogin() {
     return this.loginResult;
   }

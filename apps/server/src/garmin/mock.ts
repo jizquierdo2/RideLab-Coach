@@ -1,4 +1,11 @@
-import { buildDemoSnapshot, buildDemoTrainingHistory, type GarminActivity, type GarminSnapshot } from "@ridelab/shared";
+import {
+  buildDemoPerformanceSnapshotSolid,
+  buildDemoSnapshot,
+  buildDemoTrainingHistory,
+  type GarminActivity,
+  type GarminSnapshot,
+  type PerformanceSnapshot,
+} from "@ridelab/shared";
 import type { GarminDataProvider } from "./provider";
 
 /**
@@ -30,5 +37,9 @@ export class MockGarminDataProvider implements GarminDataProvider {
       const day = activity.startedAt.slice(0, 10);
       return day >= startDate && day <= endDate;
     });
+  }
+
+  async getPerformanceSnapshot(): Promise<PerformanceSnapshot> {
+    return buildDemoPerformanceSnapshotSolid();
   }
 }

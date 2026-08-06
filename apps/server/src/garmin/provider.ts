@@ -1,4 +1,4 @@
-import type { GarminActivity, GarminSnapshot } from "@ridelab/shared";
+import type { GarminActivity, GarminSnapshot, PerformanceSnapshot } from "@ridelab/shared";
 
 /**
  * Contrato para obtener métricas de Garmin.
@@ -22,6 +22,9 @@ export interface GarminDataProvider {
 
   /** Actividades Garmin del rango pedido, para el calendario y el matcher. */
   getActivities(params: { startDate: string; endDate: string }): Promise<GarminActivity[]>;
+
+  /** Snapshot de rendimiento para la sección Estado — deriva de `getSnapshot()`. */
+  getPerformanceSnapshot(): Promise<PerformanceSnapshot>;
 }
 
 /**

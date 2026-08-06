@@ -59,4 +59,25 @@ describe("getTrainingRecordTool", () => {
   it("devuelve null si no existe esa sesión", () => {
     expect(getTrainingRecordTool(entries, { sessionId: "no-existe" })).toBeNull();
   });
+
+  it("si la sesión se repitió, devuelve la ejecución más reciente y su origen", () => {
+    const withRepeat: ChatTrainingHistoryEntry[] = [
+      ...entries,
+      {
+        kind: "session",
+        date: "2026-08-12",
+        plannedSessionId: "w1-d1",
+        plannedTitle: "Potencia de Empuje e Impacto",
+        executionStatus: "completed",
+        startedAt: "2026-08-12T23:00:00.000Z",
+        actualRpe: 6,
+        origin: "repeated",
+        sourceExecutionId: "exec_w1-d1_original",
+      },
+    ];
+    const result = getTrainingRecordTool(withRepeat, { sessionId: "w1-d1" });
+    expect(result?.date).toBe("2026-08-12");
+    expect(result?.origin).toBe("repeated");
+    expect(result?.sourceExecutionId).toBe("exec_w1-d1_original");
+  });
 });

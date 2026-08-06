@@ -1,6 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { GarminActivity, GarminSnapshot } from "@ridelab/shared";
+import {
+  mapGarminSnapshotToPerformanceSnapshot,
+  type GarminActivity,
+  type GarminSnapshot,
+  type PerformanceSnapshot,
+} from "@ridelab/shared";
 import { assertReadOnlyTool, GARMIN_READ_ONLY_TOOLS, type GarminDataProvider } from "./provider";
 import { config } from "../config";
 
@@ -299,7 +304,12 @@ export class McpGarminDataProvider implements GarminDataProvider {
               ? never
               : "LOW" | "MODERATE" | "HIGH" | "MAXIMUM" | "UNKNOWN") ?? "UNKNOWN",
             sleepScore: num(readinessRow.sleepScore),
-            recoveryTimeHours: num(readinessRow.recoveryTime),
+            // Garmin entrega `recoveryTime` en minutos, no en horas — verificado
+            // contra la cuenta real (621 "horas" era obviamente minutos: ~10h,
+            // no 26 días).
+            recoveryTimeHours: num(readinessRow.recoveryTime) !== undefined
+              ? Math.round(((num(readinessRow.recoveryTime) as number) / 60) * 10) / 10
+              : undefined,
             acuteLoad: num(readinessRow.acuteLoad),
             hrvFactorPercent: num(readinessRow.hrvFactorPercent),
           }
@@ -375,6 +385,16 @@ export class McpGarminDataProvider implements GarminDataProvider {
         const day = activity.startedAt.slice(0, 10);
         return day >= startDate && day <= endDate;
       });
+  }
+
+  /**
+   * Snapshot de rendimiento para Estado. Reusa `getSnapshot()` (no abre una
+   * segunda conexión ni pide tools nuevas) y delega el mapeo a la función pura
+   * de `shared`, testeable sin spawnear el proceso MCP real.
+   */
+  async getPerformanceSnapshot(): Promise<PerformanceSnapshot> {
+    const snapshot = await this.getSnapshot();
+    return mapGarminSnapshotToPerformanceSnapshot(snapshot);
   }
 
   /** Herramientas que este proveedor tiene permitido usar. */

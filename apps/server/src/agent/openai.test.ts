@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type OpenAI from "openai";
-import { buildDemoSnapshot, type ChatRequest } from "@ridelab/shared";
+import { assessPerformance, buildDemoPerformanceSnapshotRecover, buildDemoSnapshot, type ChatRequest } from "@ridelab/shared";
 import { OpenAIAgentGateway } from "./openai";
 
 const snapshot = buildDemoSnapshot(new Date("2026-08-05T12:00:00.000Z"));
@@ -178,5 +178,68 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(message.analysis?.headline).toBe("Recuperación moderada.");
+  });
+});
+
+describe("OpenAIAgentGateway — generateGuidance (Estado)", () => {
+  const performanceSnapshot = buildDemoPerformanceSnapshotRecover(new Date("2026-08-06T12:00:00.000Z"));
+  const assessment = assessPerformance(performanceSnapshot);
+
+  it("usa la tool forzada y devuelve el guidance del modelo cuando responde bien", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "report_performance_guidance",
+                  arguments: JSON.stringify({
+                    todayMessage: "Tu recuperación está baja hoy.",
+                    nextWorkoutAdvice: "Cambia la sesión por movilidad.",
+                    weeklyApproach: "Baja el volumen el resto de la semana.",
+                    motivationalLine: "Recuperar también suma.",
+                  }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const guidance = await gateway.generateGuidance(assessment, performanceSnapshot);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0].tool_choice).toEqual({
+      type: "function",
+      function: { name: "report_performance_guidance" },
+    });
+    expect(guidance.todayMessage).toBe("Tu recuperación está baja hoy.");
+  });
+
+  it("cae al fallback determinístico si el modelo no devuelve la tool esperada", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: "assistant", content: "texto libre sin tool_calls", tool_calls: [] } }],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const guidance = await gateway.generateGuidance(assessment, performanceSnapshot);
+
+    expect(guidance.todayMessage).toBeTruthy();
+    expect(guidance.nextWorkoutAdvice).toBeTruthy();
+  });
+
+  it("cae al fallback determinístico si la llamada a la API falla", async () => {
+    const create = vi.fn().mockRejectedValue(new Error("network error"));
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const guidance = await gateway.generateGuidance(assessment, performanceSnapshot);
+
+    expect(guidance.todayMessage).toBeTruthy();
   });
 });

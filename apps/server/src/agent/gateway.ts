@@ -1,4 +1,11 @@
-import type { ChatRequest, ChatMessage, GarminSnapshot } from "@ridelab/shared";
+import type {
+  ChatRequest,
+  ChatMessage,
+  GarminSnapshot,
+  PerformanceAssessment,
+  PerformanceGuidance,
+  PerformanceSnapshot,
+} from "@ridelab/shared";
 
 /**
  * Contrato del agente.
@@ -16,6 +23,13 @@ export interface AgentGateway {
    * @param snapshot métricas Garmin ya resueltas por el `GarminDataProvider`
    */
   reply(request: ChatRequest, snapshot: GarminSnapshot): Promise<ChatMessage>;
+
+  /**
+   * Mensaje breve del coach para la sección Estado, a partir de un
+   * `PerformanceAssessment` ya calculado — el agente nunca decide el nivel,
+   * sólo redacta sobre lo que el motor determinístico ya resolvió.
+   */
+  generateGuidance(assessment: PerformanceAssessment, snapshot: PerformanceSnapshot): Promise<PerformanceGuidance>;
 }
 
 export function newMessageId(): string {

@@ -5,10 +5,15 @@ import {
   coachAnalysisSchema,
   COACH_BASE_INSTRUCTIONS,
   COACH_OPERATIONAL_RULES,
+  fallbackGuidance,
+  performanceGuidanceSchema,
   validateTrainingPlan,
   type ChatMessage,
   type ChatRequest,
   type GarminSnapshot,
+  type PerformanceAssessment,
+  type PerformanceGuidance,
+  type PerformanceSnapshot,
 } from "@ridelab/shared";
 import { newMessageId, type AgentGateway } from "./gateway";
 import { getTrainingHistoryTool, getTrainingRecordTool } from "./training-history-tools";
@@ -164,6 +169,60 @@ export class OpenAIAgentGateway implements AgentGateway {
       planProposal,
       error: errors.length ? errors.join(" · ") : undefined,
     };
+  }
+
+  /**
+   * Mensaje de Estado. El agente nunca decide el nivel — eso ya lo resolvió
+   * `PerformanceAssessmentService` antes de llegar acá; sólo redacta sobre el
+   * resultado. Si el modelo falla o devuelve algo que no valida, cae al mismo
+   * fallback determinístico que usa `MockAgentGateway`.
+   */
+  async generateGuidance(
+    assessment: PerformanceAssessment,
+    snapshot: PerformanceSnapshot,
+  ): Promise<PerformanceGuidance> {
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          { role: "system", content: COACH_BASE_INSTRUCTIONS },
+          { role: "system", content: PERFORMANCE_GUIDANCE_INSTRUCTIONS },
+          { role: "user", content: this.buildGuidanceContext(assessment, snapshot) },
+        ],
+        tools: [{ type: "function", function: REPORT_PERFORMANCE_GUIDANCE_TOOL }],
+        tool_choice: { type: "function", function: { name: "report_performance_guidance" } },
+      });
+
+      const call = completion.choices[0]?.message?.tool_calls?.[0];
+      if (call?.type === "function" && call.function.name === "report_performance_guidance") {
+        const parsed = performanceGuidanceSchema.safeParse(JSON.parse(call.function.arguments));
+        if (parsed.success) return parsed.data;
+      }
+    } catch (error) {
+      console.warn("[openai] generateGuidance falló, usando fallback:", error instanceof Error ? error.message : error);
+    }
+
+    return fallbackGuidance(assessment);
+  }
+
+  private buildGuidanceContext(assessment: PerformanceAssessment, snapshot: PerformanceSnapshot): string {
+    return [
+      `Assessment ya calculado (no lo cuestiones ni lo cambies, sólo redacta sobre él): ${JSON.stringify(assessment)}`,
+      `Métricas disponibles que respaldan el assessment: ${JSON.stringify({
+        trainingReadiness: snapshot.trainingReadiness,
+        sleep: snapshot.sleep,
+        hrv: snapshot.hrv,
+        bodyBattery: snapshot.bodyBattery,
+        recovery: snapshot.recovery,
+        acuteLoad: snapshot.acuteLoad,
+      })}`,
+      snapshot.missingMetrics.length
+        ? `Métricas NO disponibles, no las menciones como si existieran: ${snapshot.missingMetrics.join(", ")}`
+        : "",
+      snapshot.source === "mock" ? "IMPORTANTE: son datos de demostración, no reales." : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   private findUnknownExercise(plan: Parameters<typeof validateTrainingPlan>[0] extends never ? never : { weeks: Array<{ sessions: Array<{ sections: Array<{ exercises: Array<{ catalogExerciseId: string }> }> }> }> }): string | undefined {
@@ -427,6 +486,32 @@ const GET_TRAINING_RECORD_TOOL = {
     required: ["sessionId"],
     properties: {
       sessionId: { type: "string", description: "Id de la sesión planificada" },
+    },
+  },
+} as const;
+
+/** Instrucciones específicas para el mensaje de Estado — no reemplazan las reglas base. */
+const PERFORMANCE_GUIDANCE_INSTRUCTIONS = `Vas a redactar el mensaje de la sección "Estado". El nivel (push/solid/controlled/recover/insufficient) ya fue calculado por un motor determinístico — jamás lo cuestiones, cambies ni contradigas.
+
+Usa EXCLUSIVAMENTE las métricas que se te entregan. Nunca inventes una métrica ni un número que no venga en el contexto.
+
+Distingue dato observado de interpretación de recomendación. No diagnostiques. No afirmes que Garmin mide fuerza muscular: "con fuerza" es una etiqueta de preparación deportiva, no una medición directa.
+
+Responde en español, directo y práctico. Evita frases motivacionales genéricas ("¡tú puedes!", "cada día es una oportunidad"). Máximo tres frases por bloque de la tool.`;
+
+/** Schema JSON de `report_performance_guidance`: los 4 bloques de `PerformanceGuidance`. */
+const REPORT_PERFORMANCE_GUIDANCE_TOOL = {
+  name: "report_performance_guidance",
+  description: "Entrega el mensaje de Estado en sus 4 bloques. Úsala siempre para responder.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    required: ["todayMessage", "nextWorkoutAdvice", "weeklyApproach", "motivationalLine"],
+    properties: {
+      todayMessage: { type: "string", description: "Cómo está el usuario hoy, máximo 3 frases" },
+      nextWorkoutAdvice: { type: "string", description: "Cómo abordar la próxima sesión, máximo 3 frases" },
+      weeklyApproach: { type: "string", description: "Cómo gestionar la carga de la semana, máximo 3 frases" },
+      motivationalLine: { type: "string", description: "Una frase directa, no genérica" },
     },
   },
 } as const;

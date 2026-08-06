@@ -1,5 +1,6 @@
 import {
   buildDemoPlan,
+  fallbackGuidance,
   needsPainEscalation,
   PAIN_ESCALATION_MESSAGE,
   type ChatMessage,
@@ -7,6 +8,8 @@ import {
   type CoachAnalysis,
   type GarminSnapshot,
   type MetricChip,
+  type PerformanceAssessment,
+  type PerformanceGuidance,
 } from "@ridelab/shared";
 import { newMessageId, type AgentGateway } from "./gateway";
 import { resolveAthleteProfile } from "./profile";
@@ -86,6 +89,11 @@ export class MockAgentGateway implements AgentGateway {
 
     // Por defecto: recuperación de hoy, que es la pregunta central del producto.
     return { ...base, content: "", analysis: this.recovery(snapshot) };
+  }
+
+  /** Determinístico: el Mock nunca improvisa guidance, siempre usa el fallback de shared. */
+  async generateGuidance(assessment: PerformanceAssessment): Promise<PerformanceGuidance> {
+    return fallbackGuidance(assessment);
   }
 
   private matches(text: string, needles: readonly string[]): boolean {

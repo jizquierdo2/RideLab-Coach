@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildDemoSnapshot, validateTrainingPlan, type ChatRequest, type GarminSnapshot } from "@ridelab/shared";
+import {
+  assessPerformance,
+  buildDemoPerformanceSnapshotSolid,
+  buildDemoSnapshot,
+  validateTrainingPlan,
+  type ChatRequest,
+  type GarminSnapshot,
+} from "@ridelab/shared";
 import { MockAgentGateway } from "./mock";
 
 const gateway = new MockAgentGateway();
@@ -135,6 +142,17 @@ describe("dolor y seguridad", () => {
     );
     expect(message.content).toContain("consulta a un profesional");
     expect(message.content).not.toMatch(/tienes (una )?(tendinitis|lesión de)/i);
+  });
+});
+
+describe("generateGuidance (Estado)", () => {
+  it("entrega los 4 bloques sin depender del LLM", async () => {
+    const assessment = assessPerformance(buildDemoPerformanceSnapshotSolid());
+    const guidance = await gateway.generateGuidance(assessment);
+    expect(guidance.todayMessage).toBeTruthy();
+    expect(guidance.nextWorkoutAdvice).toBeTruthy();
+    expect(guidance.weeklyApproach).toBeTruthy();
+    expect(guidance.motivationalLine).toBeTruthy();
   });
 });
 

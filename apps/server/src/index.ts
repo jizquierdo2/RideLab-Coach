@@ -2,6 +2,7 @@ import path from "node:path";
 import express from "express";
 import cors from "cors";
 import {
+  assessPerformance,
   chatRequestSchema,
   deriveGarminStatus,
   EXERCISE_CATALOG,
@@ -88,6 +89,28 @@ app.get("/api/garmin/activities", async (req, res) => {
   } catch (error) {
     res.status(502).json({
       error: "No se pudieron obtener las actividades de Garmin",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+/**
+ * Snapshot + assessment + guidance para la sección Estado, en una sola vuelta.
+ * El error de una parte no descarta lo que sí funcionó: si `getPerformanceSnapshot`
+ * falla, no hay nada que evaluar y se responde 502; si el snapshot llega pero
+ * el agente falla al redactar, `generateGuidance` ya resuelve con su propio
+ * fallback determinístico internamente, así que nunca llega vacío hasta acá.
+ */
+app.get("/api/garmin/performance", async (_req, res) => {
+  try {
+    const snapshot = await garminProvider.getPerformanceSnapshot();
+    const assessment = assessPerformance(snapshot);
+    const guidance = await agentGateway.generateGuidance(assessment, snapshot);
+    res.json({ snapshot, assessment, guidance });
+  } catch (error) {
+    console.error("[performance] error:", error);
+    res.status(502).json({
+      error: "No se pudo actualizar tu estado en este momento",
       detail: error instanceof Error ? error.message : String(error),
     });
   }
