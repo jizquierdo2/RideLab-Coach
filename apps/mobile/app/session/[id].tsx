@@ -1,0 +1,620 @@
+import React, { useCallback, useMemo, useState } from "react";
+import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useLocalSearchParams, useRouter, Stack } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  findExercise,
+  needsPainEscalation,
+  PAIN_ESCALATION_MESSAGE,
+  VIDEO_PENDING_LABEL,
+  type ExerciseLog,
+  type SessionLog,
+  type TrainingExercise,
+} from "@ridelab/shared";
+import { useApp } from "../../src/state/AppContext";
+import { Badge, Button, Card, EmptyState, Loading, Notice, SectionHeader } from "../../src/components/ui";
+import { Icon, type IconRole } from "../../src/components/icon";
+import { countExercises, findSession, recoveryAdvice } from "../../src/lib/plan";
+import { colors, featureCardToneColor, radius, spacing, TOUCH_TARGET, typography } from "../../src/theme";
+
+/** Detalle de sesión: bloques, ejercicios, ajuste por recuperación y registro. */
+export default function SessionScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const {
+    ready,
+    activePlan,
+    sessionStatus,
+    saveLog,
+    markSession,
+    logs,
+    executions,
+    startSession,
+    finishSessionExecution,
+    garminStatus,
+  } = useApp();
+
+  const found = useMemo(
+    () => (activePlan && id ? findSession(activePlan, id) : undefined),
+    [activePlan, id],
+  );
+
+  const existingLog = useMemo(() => logs.find((log) => log.sessionId === id), [logs, id]);
+
+  const execution = useMemo(
+    () =>
+      executions
+        .filter((item) => item.plannedSessionId === id)
+        .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+        .at(-1),
+    [executions, id],
+  );
+  const [startingSession, setStartingSession] = useState(false);
+
+  const handleStart = useCallback(async () => {
+    if (!id) return;
+    setStartingSession(true);
+    try {
+      await startSession(id);
+    } finally {
+      setStartingSession(false);
+    }
+  }, [id, startSession]);
+
+  const [completed, setCompleted] = useState<Record<string, boolean>>({});
+  const [loads, setLoads] = useState<Record<string, string>>({});
+  const [reps, setReps] = useState<Record<string, string>>({});
+  const [showLogForm, setShowLogForm] = useState(false);
+  const [sessionRpe, setSessionRpe] = useState<number | undefined>();
+  const [duration, setDuration] = useState("");
+  const [painLevel, setPainLevel] = useState(0);
+  const [comment, setComment] = useState("");
+  const [saveError, setSaveError] = useState<string | undefined>();
+  const [saving, setSaving] = useState(false);
+  const [adjustmentApplied, setAdjustmentApplied] = useState(false);
+
+  const advice = useMemo(
+    () =>
+      recoveryAdvice(
+        garminStatus.status === "disconnected" ? undefined : DEMO_READINESS_SCORE,
+        ["Training Readiness", "sueño de anoche", "tiempo de recuperación"],
+      ),
+    [garminStatus.status],
+  );
+
+  const handleFinish = useCallback(async () => {
+    if (!found || !activePlan) return;
+    setSaving(true);
+    setSaveError(undefined);
+
+    const exercises: ExerciseLog[] = found.session.sections.flatMap((section) =>
+      section.exercises.map((exercise) => ({
+        exerciseId: exercise.id,
+        catalogExerciseId: exercise.catalogExerciseId,
+        name: exercise.name,
+        completed: completed[exercise.id] ?? false,
+        load: loads[exercise.id]?.trim() || undefined,
+        actualReps: reps[exercise.id]?.trim() || undefined,
+      })),
+    );
+
+    const log: SessionLog = {
+      id: `log_${found.session.id}_${Date.now()}`,
+      planId: activePlan.id,
+      sessionId: found.session.id,
+      sessionTitle: found.session.title,
+      weekNumber: found.week.number,
+      completedAt: new Date().toISOString(),
+      actualDurationMinutes: duration ? Number(duration) : undefined,
+      sessionRpe,
+      pain: painLevel > 0 ? { level: painLevel } : undefined,
+      comment: comment.trim() || undefined,
+      exercises,
+    };
+
+    try {
+      await saveLog(log);
+      await finishSessionExecution(found.session.id, {
+        actualRpe: sessionRpe,
+        painLevel: painLevel > 0 ? painLevel : undefined,
+        notes: comment.trim() || undefined,
+      });
+      router.back();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "No se pudo guardar el registro");
+    } finally {
+      setSaving(false);
+    }
+  }, [
+    found,
+    activePlan,
+    completed,
+    loads,
+    reps,
+    duration,
+    sessionRpe,
+    painLevel,
+    comment,
+    saveLog,
+    finishSessionExecution,
+    router,
+  ]);
+
+  if (!ready) return <Loading />;
+
+  if (!activePlan || !found) {
+    return (
+      <EmptyState
+        title="No encuentro esa sesión"
+        description="Puede que el plan haya cambiado. Vuelve a Entrenamiento para ver el plan activo."
+        actionLabel="Volver"
+        onAction={() => router.back()}
+      />
+    );
+  }
+
+  const { session } = found;
+  const status = sessionStatus[session.id] ?? "pending";
+  const totalExercises = countExercises(session);
+  const doneCount = Object.values(completed).filter(Boolean).length;
+
+  return (
+    <>
+      <Stack.Screen options={{ title: session.dayLabel }} />
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + spacing.xxl }]}
+      >
+        <View style={styles.headerBlock}>
+          <View style={styles.headerTop}>
+            <Text style={styles.title}>{session.title}</Text>
+            <Badge
+              text={status === "completed" ? "Completada" : status === "skipped" ? "Omitida" : "Pendiente"}
+              tone={status === "completed" ? "good" : "neutral"}
+            />
+          </View>
+          <Text style={styles.focus}>{session.focus}</Text>
+          <View style={styles.meta}>
+            <Icon role="timer" size={14} color={colors.textMuted} />
+            <Text style={styles.metaText}>{session.estimatedMinutes} min</Text>
+            <Text style={styles.metaDot}>·</Text>
+            <Icon role="exerciseCount" size={14} color={colors.textMuted} />
+            <Text style={styles.metaText}>{totalExercises} ejercicios</Text>
+            <Text style={styles.metaDot}>·</Text>
+            <Icon role="checkCircleFilled" size={14} color={colors.textMuted} />
+            <Text style={styles.metaText}>
+              {doneCount}/{totalExercises} marcados
+            </Text>
+          </View>
+        </View>
+
+        {!execution ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void handleStart()}
+            disabled={startingSession}
+            style={({ pressed }) => [styles.startButton, pressed && styles.startButtonPressed]}
+          >
+            <Icon role="playCircle" size={20} color={colors.onPrimary} />
+            <Text style={styles.startButtonText}>{startingSession ? "Iniciando…" : "Iniciar sesión"}</Text>
+          </Pressable>
+        ) : execution.status === "started" ? (
+          <Notice text={`Sesión en curso desde las ${new Date(execution.startedAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}.`} tone="info" />
+        ) : null}
+
+        {advice ? (
+          <View style={styles.adviceCard}>
+            <View style={styles.adviceHeadRow}>
+              <Icon role={adviceIcon(advice.tone)} size={20} color={featureCardToneColor[advice.tone]} />
+              <View style={styles.flex}>
+                <Text style={styles.adviceLabel}>Tu recuperación de hoy</Text>
+                <Text style={[styles.adviceTitle, { color: featureCardToneColor[advice.tone] }]}>
+                  {advice.title}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.adviceDetail}>{advice.detail}</Text>
+            {garminStatus.status === "demo" ? (
+              <Text style={styles.adviceDemo}>{garminStatus.message}</Text>
+            ) : null}
+            <Pressable
+              accessibilityRole="button"
+              disabled={adjustmentApplied}
+              onPress={() => setAdjustmentApplied(true)}
+              style={[styles.adviceButton, adjustmentApplied && styles.adviceButtonDisabled]}
+            >
+              <Text style={styles.adviceButtonText}>
+                {adjustmentApplied ? "Ajuste aplicado" : "Aplicar ajuste sugerido"}
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Notice text="Sin datos de recuperación para hoy, así que no propongo ajustes." tone="info" />
+        )}
+
+        {adjustmentApplied ? (
+          <Notice text={`Ajuste aplicado a esta sesión: ${advice?.title.toLowerCase()}.`} tone="info" />
+        ) : null}
+
+        {existingLog ? (
+          <Notice
+            text={`Ya registraste esta sesión el ${new Date(existingLog.completedAt).toLocaleDateString("es-CL")}.`}
+            tone="info"
+          />
+        ) : null}
+
+        {session.sections.map((section) => (
+          <View key={section.id}>
+            <SectionHeader title={section.title} hint={`${section.exercises.length} ejercicios`} />
+            <View style={styles.list}>
+              {section.exercises.map((exercise) => (
+                <ExerciseCard
+                  key={exercise.id}
+                  exercise={exercise}
+                  checked={completed[exercise.id] ?? false}
+                  load={loads[exercise.id] ?? ""}
+                  reps={reps[exercise.id] ?? ""}
+                  showInputs={showLogForm}
+                  onToggle={() =>
+                    setCompleted((current) => ({ ...current, [exercise.id]: !current[exercise.id] }))
+                  }
+                  onLoadChange={(value) => setLoads((current) => ({ ...current, [exercise.id]: value }))}
+                  onRepsChange={(value) => setReps((current) => ({ ...current, [exercise.id]: value }))}
+                  onOpenTechnique={() => router.push(`/exercise/${exercise.catalogExerciseId}`)}
+                />
+              ))}
+            </View>
+          </View>
+        ))}
+
+        {showLogForm ? (
+          <Card style={styles.logCard}>
+            <Text style={styles.logTitle}>Registro de la sesión</Text>
+
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Duración real (min)</Text>
+              <TextInput
+                value={duration}
+                onChangeText={setDuration}
+                keyboardType="number-pad"
+                placeholder={String(session.estimatedMinutes)}
+                placeholderTextColor={colors.textFaint}
+                style={styles.input}
+              />
+            </View>
+
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>RPE de la sesión</Text>
+              <Scale value={sessionRpe ?? 0} min={1} max={10} onChange={setSessionRpe} />
+            </View>
+
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Dolor o molestias (0-10)</Text>
+              <Scale value={painLevel} min={0} max={10} onChange={setPainLevel} />
+              {needsPainEscalation({ pain: { level: painLevel } }) ? (
+                <Notice text={PAIN_ESCALATION_MESSAGE} tone="error" />
+              ) : null}
+            </View>
+
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Comentario</Text>
+              <TextInput
+                value={comment}
+                onChangeText={setComment}
+                placeholder="Cómo te sentiste, qué cambiarías…"
+                placeholderTextColor={colors.textFaint}
+                style={[styles.input, styles.textArea]}
+                multiline
+              />
+            </View>
+
+            {saveError ? <Notice text={saveError} tone="error" /> : null}
+
+            <Button
+              label={saving ? "Guardando…" : "Finalizar sesión"}
+              onPress={() => void handleFinish()}
+              loading={saving}
+            />
+            <Button label="Cancelar" variant="ghost" onPress={() => setShowLogForm(false)} />
+          </Card>
+        ) : (
+          <View style={styles.footerActions}>
+            <Button label="Finalizar sesión" onPress={() => setShowLogForm(true)} />
+            <Button
+              label="Omitir sesión"
+              variant="ghost"
+              onPress={() => void markSession(session.id, "skipped").then(() => router.back())}
+            />
+          </View>
+        )}
+      </ScrollView>
+    </>
+  );
+}
+
+/** Tarjeta de ejercicio con miniatura, prescripción, cues y acciones. */
+function ExerciseCard({
+  exercise,
+  checked,
+  load,
+  reps,
+  showInputs,
+  onToggle,
+  onLoadChange,
+  onRepsChange,
+  onOpenTechnique,
+}: {
+  exercise: TrainingExercise;
+  checked: boolean;
+  load: string;
+  reps: string;
+  showInputs: boolean;
+  onToggle: () => void;
+  onLoadChange: (value: string) => void;
+  onRepsChange: (value: string) => void;
+  onOpenTechnique: () => void;
+}) {
+  const catalogEntry = findExercise(exercise.catalogExerciseId);
+  const thumbnail = exercise.thumbnailUrl ?? catalogEntry?.thumbnailUrl;
+  const hasVideo = Boolean(exercise.videoUrl ?? catalogEntry?.videoUrl);
+
+  // "10" se muestra como "10 reps", pero "8 por pierna" ya se explica solo.
+  const repsText = exercise.reps
+    ? /[a-zá-ú]/i.test(exercise.reps)
+      ? exercise.reps
+      : `${exercise.reps} reps`
+    : undefined;
+
+  const prescription = [
+    exercise.sets ? `${exercise.sets} series` : undefined,
+    repsText,
+    exercise.durationSeconds ? `${exercise.durationSeconds}s` : undefined,
+    exercise.distanceMeters ? `${exercise.distanceMeters} m` : undefined,
+    exercise.restSeconds !== undefined ? `${exercise.restSeconds}s descanso` : undefined,
+    exercise.rpe,
+  ].filter(Boolean);
+
+  return (
+    <View style={styles.exerciseCard}>
+      <View style={styles.exerciseTop}>
+        {thumbnail ? (
+          <Image source={{ uri: thumbnail }} style={styles.thumb} resizeMode="cover" />
+        ) : (
+          <View style={[styles.thumb, styles.thumbEmpty]}>
+            <Text style={styles.thumbEmptyText}>Sin imagen</Text>
+          </View>
+        )}
+        <View style={styles.exerciseHead}>
+          <Text style={styles.exerciseName}>{exercise.name}</Text>
+          <Text style={styles.exerciseWhy}>{exercise.why}</Text>
+        </View>
+      </View>
+
+      {prescription.length > 0 ? <Text style={styles.prescription}>{prescription.join(" · ")}</Text> : null}
+      {exercise.loadGuidance ? <Text style={styles.loadGuidance}>{exercise.loadGuidance}</Text> : null}
+
+      {exercise.techniqueCues.length > 0 ? (
+        <View style={styles.cues}>
+          {exercise.techniqueCues.slice(0, 3).map((cue) => (
+            <Text key={cue} style={styles.cue}>
+              • {cue}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+
+      {showInputs ? (
+        <View style={styles.inputsRow}>
+          <TextInput
+            value={load}
+            onChangeText={onLoadChange}
+            placeholder="Carga (ej: 20 kg)"
+            placeholderTextColor={colors.textFaint}
+            style={[styles.input, styles.inputSmall]}
+          />
+          <TextInput
+            value={reps}
+            onChangeText={onRepsChange}
+            placeholder="Reps reales"
+            placeholderTextColor={colors.textFaint}
+            style={[styles.input, styles.inputSmall]}
+          />
+        </View>
+      ) : null}
+
+      <View style={styles.exerciseActions}>
+        <Pressable
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked }}
+          onPress={onToggle}
+          style={styles.checkboxRow}
+        >
+          <Icon
+            role={checked ? "checkCircleFilled" : "checkCircleOutline"}
+            size={22}
+            color={checked ? colors.primary : colors.outlineVariant}
+          />
+          <Text style={styles.checkboxLabel}>Completado</Text>
+        </Pressable>
+
+        <Pressable accessibilityRole="button" onPress={onOpenTechnique} style={styles.techniqueButton}>
+          <Icon role="playCircle" size={16} color={colors.accent} />
+          <Text style={styles.techniqueText}>{hasVideo ? "Ver técnica" : VIDEO_PENDING_LABEL}</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+/** Escala táctil de 0-10 / 1-10, cómoda con el pulgar. */
+function Scale({
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  const options = Array.from({ length: max - min + 1 }, (_, index) => min + index);
+  return (
+    <View style={styles.scale}>
+      {options.map((option) => (
+        <Pressable
+          key={option}
+          accessibilityRole="button"
+          accessibilityLabel={`Valor ${option}`}
+          onPress={() => onChange(option)}
+          style={[styles.scaleItem, value === option && styles.scaleItemActive]}
+        >
+          <Text style={[styles.scaleText, value === option && styles.scaleTextActive]}>{option}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+function adviceIcon(tone: "good" | "warning" | "bad"): IconRole {
+  return tone === "good" ? "recoveryGood" : tone === "warning" ? "recoveryWarning" : "warning";
+}
+
+/**
+ * Readiness usado por el banner mientras Garmin no está conectado.
+ * Coincide con el snapshot demo del backend para no mostrar cifras contradictorias.
+ */
+const DEMO_READINESS_SCORE = 62;
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.background },
+  content: { padding: spacing.lg, gap: spacing.xl },
+
+  headerBlock: { gap: spacing.sm },
+  headerTop: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: spacing.md },
+  title: { ...typography.title, color: colors.text, flex: 1 },
+  focus: { ...typography.body, color: colors.textMuted },
+  meta: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flexWrap: "wrap" },
+  metaText: { ...typography.caption, color: colors.textMuted },
+  metaDot: { ...typography.caption, color: colors.textFaint },
+
+  startButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    minHeight: TOUCH_TARGET,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+  },
+  startButtonPressed: { opacity: 0.85 },
+  startButtonText: { ...typography.bodyStrong, color: colors.onPrimary },
+
+  flex: { flex: 1 },
+  adviceCard: {
+    backgroundColor: colors.featureCard,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  adviceHeadRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  adviceLabel: {
+    ...typography.caption,
+    color: colors.onFeatureCardFaint,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  adviceTitle: { ...typography.subtitle },
+  adviceDetail: { ...typography.caption, color: colors.onFeatureCardMuted, lineHeight: 18 },
+  adviceDemo: { ...typography.caption, color: colors.warningOnDark },
+  adviceButton: {
+    minHeight: TOUCH_TARGET,
+    borderRadius: radius.md,
+    backgroundColor: colors.primaryFixed,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: spacing.xs,
+  },
+  adviceButtonDisabled: { opacity: 0.5 },
+  adviceButtonText: { ...typography.bodyStrong, color: colors.onPrimaryFixed },
+
+  list: { gap: spacing.md },
+
+  exerciseCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  exerciseTop: { flexDirection: "row", gap: spacing.md },
+  thumb: { width: 84, height: 60, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+  thumbEmpty: { alignItems: "center", justifyContent: "center" },
+  thumbEmptyText: { ...typography.caption, color: colors.textFaint, fontSize: 10 },
+  exerciseHead: { flex: 1, gap: 2 },
+  exerciseName: { ...typography.subtitle, color: colors.text },
+  exerciseWhy: { ...typography.caption, color: colors.textMuted, lineHeight: 17 },
+
+  prescription: { ...typography.bodyStrong, color: colors.accent },
+  loadGuidance: { ...typography.caption, color: colors.textMuted },
+  cues: { gap: 2 },
+  cue: { ...typography.caption, color: colors.textFaint, lineHeight: 17 },
+
+  inputsRow: { flexDirection: "row", gap: spacing.sm },
+  // `flexBasis: 0` + `minWidth: 0` evitan que el campo crezca hasta el ancho de
+  // su placeholder y se salga de la tarjeta en pantallas de 360 px.
+  inputSmall: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, minHeight: 42 },
+
+  exerciseActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: spacing.xs,
+  },
+  checkboxRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: TOUCH_TARGET, flex: 1 },
+  checkboxLabel: { ...typography.caption, color: colors.textMuted },
+  techniqueButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    minHeight: TOUCH_TARGET,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+  },
+  techniqueText: { ...typography.caption, color: colors.accent, fontWeight: "700" },
+
+  logCard: { gap: spacing.lg },
+  logTitle: { ...typography.subtitle, color: colors.text },
+  field: { gap: spacing.sm },
+  fieldLabel: { ...typography.label, color: colors.textMuted },
+  input: {
+    minHeight: TOUCH_TARGET,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    color: colors.text,
+    ...typography.body,
+  },
+  textArea: { minHeight: 90, paddingTop: spacing.md, textAlignVertical: "top" },
+
+  scale: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  scaleItem: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scaleItemActive: { backgroundColor: colors.accent, borderColor: colors.accent },
+  scaleText: { ...typography.bodyStrong, color: colors.textMuted },
+  scaleTextActive: { color: colors.onAccent },
+
+  footerActions: { gap: spacing.sm },
+});

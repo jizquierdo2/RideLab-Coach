@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "outDir": "./dist",
+    // CommonJS para que Node resuelva los imports relativos sin extensión.
+    // Metro no usa esta salida: consume `src/` vía el campo `react-native`.
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

@@ -1,0 +1,34 @@
+import { buildDemoSnapshot, buildDemoTrainingHistory, type GarminActivity, type GarminSnapshot } from "@ridelab/shared";
+import type { GarminDataProvider } from "./provider";
+
+/**
+ * Proveedor de datos simulados.
+ *
+ * El snapshot que devuelve lleva `dataSource: "mock"` y `connected: false`, lo
+ * que hace que la app muestre siempre "Datos de demostración — Garmin aún no
+ * está conectado". No hay forma de que estos datos se presenten como reales.
+ */
+export class MockGarminDataProvider implements GarminDataProvider {
+  readonly name = "MockGarminDataProvider";
+
+  async getSnapshot(days = 28): Promise<GarminSnapshot> {
+    const snapshot = buildDemoSnapshot();
+    return {
+      ...snapshot,
+      period: `${snapshot.period.split(" a ")[0]} a ${new Date().toISOString().slice(0, 10)} (${days} días)`,
+    };
+  }
+
+  async isReady(): Promise<boolean> {
+    // Siempre disponible, pero nunca cuenta como conexión real con Garmin.
+    return true;
+  }
+
+  async getActivities({ startDate, endDate }: { startDate: string; endDate: string }): Promise<GarminActivity[]> {
+    const { activities } = buildDemoTrainingHistory();
+    return activities.filter((activity) => {
+      const day = activity.startedAt.slice(0, 10);
+      return day >= startDate && day <= endDate;
+    });
+  }
+}

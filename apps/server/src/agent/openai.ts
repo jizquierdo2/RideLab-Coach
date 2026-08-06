@@ -1,0 +1,432 @@
+import OpenAI from "openai";
+import {
+  buildCatalogPrompt,
+  CATALOG_IDS,
+  coachAnalysisSchema,
+  COACH_BASE_INSTRUCTIONS,
+  COACH_OPERATIONAL_RULES,
+  validateTrainingPlan,
+  type ChatMessage,
+  type ChatRequest,
+  type GarminSnapshot,
+} from "@ridelab/shared";
+import { newMessageId, type AgentGateway } from "./gateway";
+import { getTrainingHistoryTool, getTrainingRecordTool } from "./training-history-tools";
+import { config } from "../config";
+
+/** Tools de sólo información: el modelo necesita su resultado para seguir, no son terminales. */
+const INFO_TOOL_NAMES = new Set(["get_training_history", "get_training_record"]);
+/** Tope de vueltas de tool-calling, para no quedar en loop si el modelo insiste en pedir info. */
+const MAX_TOOL_TURNS = 4;
+
+/**
+ * Coach real sobre OpenAI.
+ *
+ * Verificado contra la API real (requiere `OPENAI_API_KEY`): `propose_training_plan`
+ * y `report_metrics` el 2026-08-05, y el loop de tool-calling de
+ * `get_training_history`/`get_training_record` el 2026-08-06 (el modelo pidió
+ * el historial, recibió el resultado en la segunda vuelta y lo usó para
+ * distinguir "iniciada" de "completada" sin inventar el vínculo con Garmin).
+ * Con `MOCK_MODE=true` esta clase no se instancia.
+ *
+ * El plan nunca se reconstruye leyendo Markdown: llega por la tool
+ * `propose_training_plan` y se valida con Zod antes de devolverlo.
+ *
+ * `get_training_history`/`get_training_record` son tools de información: a
+ * diferencia de `propose_training_plan`/`report_metrics` (cuyos argumentos
+ * SON la respuesta), el modelo necesita el resultado de vuelta para poder
+ * responder — por eso `reply()` hace un loop real de tool-calling en vez de
+ * resolver todo en una sola vuelta.
+ */
+export class OpenAIAgentGateway implements AgentGateway {
+  readonly name = "OpenAIAgentGateway";
+
+  private readonly client: OpenAI;
+
+  constructor(
+    apiKey: string = config.openai.apiKey,
+    private readonly model = config.openai.model,
+    client?: OpenAI,
+  ) {
+    if (!apiKey) throw new Error("OPENAI_API_KEY es obligatoria para OpenAIAgentGateway");
+    this.client = client ?? new OpenAI({ apiKey });
+  }
+
+  async reply(request: ChatRequest, snapshot: GarminSnapshot): Promise<ChatMessage> {
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: COACH_BASE_INSTRUCTIONS },
+      { role: "system", content: COACH_OPERATIONAL_RULES },
+      { role: "system", content: buildCatalogPrompt() },
+      { role: "system", content: this.buildContext(request, snapshot) },
+      ...request.messages.map((m) => ({ role: m.role, content: m.content }) as const),
+    ];
+
+    const tools: OpenAI.ChatCompletionTool[] = [
+      { type: "function", function: PROPOSE_TRAINING_PLAN_TOOL },
+      { type: "function", function: REPORT_METRICS_TOOL },
+      { type: "function", function: GET_TRAINING_HISTORY_TOOL },
+      { type: "function", function: GET_TRAINING_RECORD_TOOL },
+    ];
+
+    let choice: OpenAI.ChatCompletion.Choice | undefined;
+
+    for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+      const completion = await this.client.chat.completions.create({ model: this.model, messages, tools });
+      choice = completion.choices[0];
+      const calls = choice?.message?.tool_calls ?? [];
+      const infoCalls = calls.filter((call) => call.type === "function" && INFO_TOOL_NAMES.has(call.function.name));
+
+      if (infoCalls.length === 0) break;
+
+      // El mensaje del asistente con los tool_calls debe ir antes de sus resultados.
+      messages.push(choice!.message as OpenAI.ChatCompletionMessageParam);
+      for (const call of infoCalls) {
+        if (call.type !== "function") continue;
+        let args: unknown = {};
+        try {
+          args = JSON.parse(call.function.arguments);
+        } catch {
+          // Argumentos vacíos: la tool resuelve con lo que tenga (sin filtros).
+        }
+        const result = this.resolveInfoTool(call.function.name, args, request.trainingHistory);
+        messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+      }
+    }
+
+    const base = {
+      id: newMessageId(),
+      role: "assistant" as const,
+      createdAt: new Date().toISOString(),
+      isDemoData: snapshot.dataSource === "mock",
+    };
+
+    const toolCalls = (choice?.message?.tool_calls ?? []).filter(
+      (call) => call.type !== "function" || !INFO_TOOL_NAMES.has(call.function.name),
+    );
+    let planProposal: ChatMessage["planProposal"];
+    let analysis: ChatMessage["analysis"];
+    const errors: string[] = [];
+
+    for (const call of toolCalls) {
+      if (call.type !== "function") continue;
+      let args: unknown;
+      try {
+        args = JSON.parse(call.function.arguments);
+      } catch {
+        errors.push(`La herramienta ${call.function.name} devolvió JSON inválido`);
+        continue;
+      }
+
+      if (call.function.name === "propose_training_plan") {
+        const candidate = (args as { plan?: unknown; summary?: unknown }).plan ?? args;
+        const result = validateTrainingPlan(candidate);
+        if (!result.ok) {
+          // Un plan inválido nunca se persiste ni se muestra como si lo fuera.
+          errors.push(`El plan propuesto no pasó la validación: ${result.errors.join("; ")}`);
+          continue;
+        }
+        const unknownExercise = this.findUnknownExercise(result.plan);
+        if (unknownExercise) {
+          errors.push(`El plan referencia un ejercicio fuera del catálogo: ${unknownExercise}`);
+          continue;
+        }
+        planProposal = {
+          plan: result.plan,
+          summary:
+            typeof (args as { summary?: unknown }).summary === "string"
+              ? ((args as { summary: string }).summary)
+              : `${result.plan.durationWeeks} semanas · ${result.plan.daysPerWeek} días por semana`,
+        };
+      }
+
+      if (call.function.name === "report_metrics") {
+        const parsed = coachAnalysisSchema.safeParse(args);
+        if (parsed.success) {
+          analysis = {
+            ...parsed.data,
+            period: parsed.data.period ?? snapshot.period,
+            lastSyncAt: parsed.data.lastSyncAt ?? snapshot.lastSyncAt,
+            dataSource: parsed.data.dataSource ?? snapshot.dataSource,
+            unavailableMetrics: parsed.data.unavailableMetrics.length
+              ? parsed.data.unavailableMetrics
+              : snapshot.unavailableMetrics,
+          };
+        } else {
+          errors.push("El reporte de métricas no cumplió el formato esperado");
+        }
+      }
+    }
+
+    return {
+      ...base,
+      content: choice?.message?.content ?? "",
+      analysis,
+      planProposal,
+      error: errors.length ? errors.join(" · ") : undefined,
+    };
+  }
+
+  private findUnknownExercise(plan: Parameters<typeof validateTrainingPlan>[0] extends never ? never : { weeks: Array<{ sessions: Array<{ sections: Array<{ exercises: Array<{ catalogExerciseId: string }> }> }> }> }): string | undefined {
+    const valid = new Set<string>(CATALOG_IDS);
+    for (const week of plan.weeks) {
+      for (const session of week.sessions) {
+        for (const section of session.sections) {
+          for (const exercise of section.exercises) {
+            if (!valid.has(exercise.catalogExerciseId)) return exercise.catalogExerciseId;
+          }
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Resuelve una tool de información sin I/O: sólo filtra/recorta el
+   * `trainingHistory` que ya llegó en la petición. Nunca se inyecta de
+   * antemano en el prompt — sólo llega al modelo si la pide explícitamente.
+   */
+  private resolveInfoTool(name: string, args: unknown, trainingHistory: ChatRequest["trainingHistory"]): unknown {
+    if (name === "get_training_history") {
+      const parsed = args as { startDate?: string; endDate?: string; includeGarminMetrics?: boolean };
+      return getTrainingHistoryTool(trainingHistory, parsed);
+    }
+    if (name === "get_training_record") {
+      const parsed = args as { sessionId: string };
+      return getTrainingRecordTool(trainingHistory, parsed);
+    }
+    return null;
+  }
+
+  /** Contexto factual. Las métricas ausentes van explícitas para que no se inventen. */
+  private buildContext(request: ChatRequest, snapshot: GarminSnapshot): string {
+    const profile = request.athleteProfile;
+    const logs = request.recentLogs.slice(-5);
+
+    return [
+      `Datos Garmin disponibles (fuente: ${snapshot.dataSource}, periodo: ${snapshot.period}, última sincronización: ${snapshot.lastSyncAt}):`,
+      JSON.stringify(
+        {
+          sleep: snapshot.sleep,
+          hrv: snapshot.hrv,
+          restingHeartRate: snapshot.restingHeartRate,
+          bodyBattery: snapshot.bodyBattery,
+          stress: snapshot.stress,
+          trainingReadiness: snapshot.trainingReadiness,
+          trainingStatus: snapshot.trainingStatus,
+          vo2max: snapshot.vo2max,
+          recentActivities: snapshot.recentActivities,
+          weeklyTrends: snapshot.weeklyTrends,
+        },
+        null,
+        1,
+      ),
+      snapshot.unavailableMetrics.length
+        ? `Métricas NO disponibles (dilo explícitamente si te preguntan por ellas, no las estimes): ${snapshot.unavailableMetrics.join(", ")}`
+        : "",
+      snapshot.dataSource === "mock"
+        ? "IMPORTANTE: estos son datos de demostración. Adviértelo y no los presentes como reales."
+        : "",
+      profile ? `Perfil del atleta ya conocido (no vuelvas a preguntar esto): ${JSON.stringify(profile)}` : "",
+      logs.length ? `Sesiones registradas recientemente: ${JSON.stringify(logs)}` : "El usuario aún no registra sesiones.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+}
+
+/** Schema JSON de `propose_training_plan`, espejo del schema Zod de shared. */
+const PROPOSE_TRAINING_PLAN_TOOL = {
+  name: "propose_training_plan",
+  description:
+    "Entrega un plan de entrenamiento estructurado y persistible. Úsala SIEMPRE que crees o ajustes un plan. Nunca entregues el plan sólo como texto.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    required: ["plan", "summary"],
+    properties: {
+      summary: { type: "string", description: "Resumen corto para la tarjeta del chat" },
+      plan: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "id",
+          "title",
+          "goal",
+          "sport",
+          "durationWeeks",
+          "daysPerWeek",
+          "sessionDurationMinutes",
+          "startDate",
+          "generatedAt",
+          "sourceContext",
+          "weeks",
+        ],
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          goal: { type: "string" },
+          sport: { type: "string" },
+          durationWeeks: { type: "integer", minimum: 1, maximum: 52 },
+          daysPerWeek: { type: "integer", minimum: 1, maximum: 7 },
+          sessionDurationMinutes: { type: "integer", minimum: 1 },
+          startDate: { type: "string", description: "YYYY-MM-DD" },
+          generatedAt: { type: "string", description: "ISO 8601" },
+          sourceContext: {
+            type: "object",
+            additionalProperties: false,
+            required: ["userGoals", "limitations", "equipment"],
+            properties: {
+              garminPeriod: { type: "string" },
+              userGoals: { type: "array", items: { type: "string" } },
+              limitations: { type: "array", items: { type: "string" } },
+              equipment: { type: "array", items: { type: "string" } },
+            },
+          },
+          weeks: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["number", "objective", "sessions"],
+              properties: {
+                number: { type: "integer", minimum: 1 },
+                objective: { type: "string" },
+                sessions: {
+                  type: "array",
+                  minItems: 1,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["id", "dayLabel", "title", "focus", "estimatedMinutes", "sections"],
+                    properties: {
+                      id: { type: "string" },
+                      dayLabel: { type: "string" },
+                      title: { type: "string" },
+                      focus: { type: "string" },
+                      estimatedMinutes: { type: "integer", minimum: 1 },
+                      scheduledDate: { type: "string" },
+                      sections: {
+                        type: "array",
+                        minItems: 1,
+                        items: {
+                          type: "object",
+                          additionalProperties: false,
+                          required: ["id", "title", "order", "exercises"],
+                          properties: {
+                            id: { type: "string" },
+                            title: { type: "string" },
+                            order: { type: "integer", minimum: 0 },
+                            exercises: {
+                              type: "array",
+                              minItems: 1,
+                              items: {
+                                type: "object",
+                                additionalProperties: false,
+                                required: ["id", "catalogExerciseId", "name", "why", "techniqueCues"],
+                                properties: {
+                                  id: { type: "string" },
+                                  catalogExerciseId: {
+                                    type: "string",
+                                    enum: CATALOG_IDS,
+                                    description: "Debe ser un ID del catálogo. No inventes ejercicios.",
+                                  },
+                                  name: { type: "string" },
+                                  why: { type: "string" },
+                                  sets: { type: "integer", minimum: 1 },
+                                  reps: { type: "string" },
+                                  durationSeconds: { type: "integer", minimum: 1 },
+                                  distanceMeters: { type: "number", minimum: 1 },
+                                  restSeconds: { type: "integer", minimum: 0 },
+                                  rpe: { type: "string" },
+                                  loadGuidance: { type: "string" },
+                                  techniqueCues: { type: "array", items: { type: "string" } },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+/** Schema JSON de `report_metrics`: separa dato, interpretación y recomendación. */
+const REPORT_METRICS_TOOL = {
+  name: "report_metrics",
+  description:
+    "Entrega una respuesta sobre datos del usuario separando conclusión, métricas, interpretación y recomendación. Úsala siempre que hables de sus métricas.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    required: ["headline", "metrics", "period", "lastSyncAt"],
+    properties: {
+      headline: { type: "string", description: "Conclusión principal, una frase" },
+      metrics: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["label", "value"],
+          properties: {
+            label: { type: "string" },
+            value: { type: "string" },
+            tone: { type: "string", enum: ["neutral", "good", "warning", "bad"] },
+          },
+        },
+      },
+      interpretation: { type: "string", description: "Lectura de los datos, marcada como interpretación" },
+      recommendation: { type: "string", description: "Acción concreta" },
+      period: { type: "string", description: "Periodo analizado" },
+      lastSyncAt: { type: "string", description: "Fecha de última sincronización" },
+      unavailableMetrics: { type: "array", items: { type: "string" } },
+    },
+  },
+} as const;
+
+/**
+ * Schema JSON de `get_training_history`: tool de INFORMACIÓN, no terminal.
+ * Su resultado se le devuelve al modelo en un segundo turno — no se inyecta
+ * en el prompt de antemano, así se cumple "no enviar todo el historial en
+ * cada mensaje".
+ */
+const GET_TRAINING_HISTORY_TOOL = {
+  name: "get_training_history",
+  description:
+    "Devuelve el historial combinado (lo planificado, lo ejecutado en la app y los datos Garmin vinculados) del rango de fechas pedido, incluidas actividades libres sin sesión asociada. Úsala antes de responder preguntas sobre cumplimiento, progreso, carga de entrenamiento, o comparación entre lo planificado y lo realizado.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      startDate: { type: "string", description: "YYYY-MM-DD, inicio del rango" },
+      endDate: { type: "string", description: "YYYY-MM-DD, fin del rango" },
+      includeGarminMetrics: {
+        type: "boolean",
+        description: "Si es false, omite los campos de Garmin (por defecto true)",
+      },
+    },
+  },
+} as const;
+
+/** Schema JSON de `get_training_record`: el registro combinado de una sesión planificada puntual. */
+const GET_TRAINING_RECORD_TOOL = {
+  name: "get_training_record",
+  description:
+    "Devuelve el registro combinado (planificado + ejecutado + Garmin) de una sesión planificada específica, por su id. Úsala cuando el usuario pregunte por una sesión puntual.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    required: ["sessionId"],
+    properties: {
+      sessionId: { type: "string", description: "Id de la sesión planificada" },
+    },
+  },
+} as const;

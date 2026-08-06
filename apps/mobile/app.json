@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "RideLab Coach",
+    "slug": "ridelab-coach",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "ridelab",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.ridelab.coach",
+      "adaptiveIcon": {
+        "backgroundColor": "#12140F",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-font"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "27e94090-2cda-48a3-a126-78d08ec9a310"
+      }
+    },
+    "owner": "jizquierdo2"
+  }
+}

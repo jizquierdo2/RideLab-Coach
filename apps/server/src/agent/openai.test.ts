@@ -1,0 +1,182 @@
+import { describe, expect, it, vi } from "vitest";
+import type OpenAI from "openai";
+import { buildDemoSnapshot, type ChatRequest } from "@ridelab/shared";
+import { OpenAIAgentGateway } from "./openai";
+
+const snapshot = buildDemoSnapshot(new Date("2026-08-05T12:00:00.000Z"));
+
+function request(trainingHistory: ChatRequest["trainingHistory"] = [], content = "¿Cumplí mi plan esta semana?"): ChatRequest {
+  return { messages: [{ role: "user", content }], recentLogs: [], trainingHistory };
+}
+
+/** Cliente falso: nunca pega a la red real, el test controla cada respuesta. */
+function fakeClient(create: ReturnType<typeof vi.fn>): OpenAI {
+  return { chat: { completions: { create } } } as unknown as OpenAI;
+}
+
+const HISTORY: ChatRequest["trainingHistory"] = [
+  {
+    kind: "session",
+    date: "2026-08-05",
+    plannedSessionId: "w1-d1",
+    plannedTitle: "Potencia de Empuje e Impacto",
+    executionStatus: "completed",
+    actualRpe: 7,
+    garminActivityName: "Cardio",
+    matchStatus: "confirmed",
+  },
+];
+
+describe("OpenAIAgentGateway — loop de tool-calling", () => {
+  it("no inyecta el historial en el prompt del primer turno", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: "assistant", content: "Sin datos.", tool_calls: [] } }],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    await gateway.reply(request(HISTORY), snapshot);
+
+    const firstCallMessages = create.mock.calls[0][0].messages;
+    const serialized = JSON.stringify(firstCallMessages);
+    expect(serialized).not.toContain("Potencia de Empuje e Impacto");
+    expect(serialized).not.toContain("plannedTitle");
+  });
+
+  it("hace una segunda vuelta cuando el modelo pide get_training_history, y usa el resultado en la respuesta final", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "get_training_history",
+                    arguments: JSON.stringify({ startDate: "2026-08-01", endDate: "2026-08-05" }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        choices: [
+          { message: { role: "assistant", content: "Completaste 1 de 1 sesiones esta semana.", tool_calls: [] } },
+        ],
+      });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const message = await gateway.reply(request(HISTORY), snapshot);
+
+    expect(create).toHaveBeenCalledTimes(2);
+
+    const secondCallMessages = create.mock.calls[1][0].messages as Array<{ role: string; content: string }>;
+    const toolMessage = secondCallMessages.find((m) => m.role === "tool");
+    expect(toolMessage).toBeDefined();
+
+    const toolResult = JSON.parse(toolMessage!.content);
+    expect(toolResult).toHaveLength(1);
+    expect(toolResult[0].plannedTitle).toBe("Potencia de Empuje e Impacto");
+
+    expect(message.content).toBe("Completaste 1 de 1 sesiones esta semana.");
+  });
+
+  it("resuelve get_training_record filtrando por sessionId", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "get_training_record", arguments: JSON.stringify({ sessionId: "w1-d1" }) },
+                },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { role: "assistant", content: "RPE 7, sesión completada.", tool_calls: [] } }],
+      });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    await gateway.reply(request(HISTORY, "¿Qué tan intensa fue mi sesión del día 1?"), snapshot);
+
+    const secondCallMessages = create.mock.calls[1][0].messages as Array<{ role: string; content: string }>;
+    const toolMessage = secondCallMessages.find((m) => m.role === "tool");
+    const toolResult = JSON.parse(toolMessage!.content);
+    expect(toolResult.actualRpe).toBe(7);
+  });
+
+  it("no entra en loop infinito: se detiene en MAX_TOOL_TURNS aunque el modelo insista", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_x",
+                type: "function",
+                function: { name: "get_training_history", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    await gateway.reply(request(HISTORY), snapshot);
+
+    // No debe superar el tope de vueltas definido internamente.
+    expect(create.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it("propose_training_plan y report_metrics siguen resolviéndose en una sola vuelta (sin tools de información)", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "report_metrics",
+                  arguments: JSON.stringify({
+                    headline: "Recuperación moderada.",
+                    metrics: [],
+                    period: snapshot.period,
+                    lastSyncAt: snapshot.lastSyncAt,
+                  }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const message = await gateway.reply(request([], "¿Cómo está mi recuperación?"), snapshot);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(message.analysis?.headline).toBe("Recuperación moderada.");
+  });
+});

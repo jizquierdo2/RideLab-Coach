@@ -1,0 +1,22 @@
+{
+  "name": "ridelab-coach",
+  "private": true,
+  "version": "0.1.0",
+  "description": "RideLab Coach — coach de IA para MTB conectado a métricas Garmin",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:shared": "npm run build --workspace @ridelab/shared",
+    "test": "npm run test --workspace @ridelab/shared && npm run test --workspace @ridelab/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "server": "npm run dev --workspace @ridelab/server",
+    "mobile": "npm run start --workspace @ridelab/mobile",
+    "android": "npm run android --workspace @ridelab/mobile",
+    "web": "npm run web --workspace @ridelab/mobile"
+  }
+}
