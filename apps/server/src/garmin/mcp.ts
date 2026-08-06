@@ -52,7 +52,12 @@ export class McpGarminDataProvider implements GarminDataProvider {
       const client = await this.connect();
       const result = await client.callTool({ name: "get_daily_summary", arguments: {} });
       if ((result as { isError?: boolean }).isError) {
-        console.warn("[garmin-mcp] verifyLogin: get_daily_summary respondió isError=true");
+        const content = (result as { content?: Array<{ type: string; text?: string }> }).content ?? [];
+        const text = content
+          .filter((part) => part.type === "text" && part.text)
+          .map((part) => part.text)
+          .join("");
+        console.warn("[garmin-mcp] verifyLogin: get_daily_summary respondió error:", text.slice(0, 500));
         return { ok: false, message: loginFailedMessage() };
       }
       return { ok: true };
