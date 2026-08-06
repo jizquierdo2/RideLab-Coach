@@ -5,7 +5,7 @@ import { formatSantiagoTime, santiagoDayKey } from "@ridelab/shared";
 import { useApp } from "../../../src/state/AppContext";
 import { Badge, EmptyState, Loading } from "../../../src/components/ui";
 import { Icon } from "../../../src/components/icon";
-import { buildCombinedRecords, freeActivities } from "../../../src/lib/calendar";
+import { buildCombinedRecords, freeActivities, repeatedFromLabel } from "../../../src/lib/calendar";
 import { colors, radius, spacing, typography } from "../../../src/theme";
 
 const WEEKDAY_LABELS = [
@@ -65,6 +65,10 @@ export default function DayDetailScreen() {
                   }`}
                   onPress={() => router.push(`/session/${record.plannedSession.id}`)}
                 />
+
+                {repeatedFromLabel(record.execution, executions) ? (
+                  <Text style={styles.repeatedLabel}>{repeatedFromLabel(record.execution, executions)}</Text>
+                ) : null}
 
                 {record.garminActivity ? (
                   <>
@@ -214,6 +218,8 @@ const styles = StyleSheet.create({
   cardTime: { ...typography.caption, color: colors.textFaint },
   cardTitle: { ...typography.bodyStrong, color: colors.text },
   cardMeta: { ...typography.caption, color: colors.textMuted },
+
+  repeatedLabel: { ...typography.caption, color: colors.textFaint, paddingLeft: spacing.lg },
 
   linkRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs, paddingLeft: spacing.lg },
   linkLine: { width: 16, height: 1, backgroundColor: colors.primaryContainer },

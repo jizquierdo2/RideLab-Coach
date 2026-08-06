@@ -2,6 +2,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   activitySessionMatchSchema,
   garminActivitySchema,
+  performanceResponseSchema,
+  plannedSessionOccurrenceSchema,
   sessionExecutionSchema,
   sessionLogSchema,
   trainingPlanSchema,
@@ -10,6 +12,8 @@ import {
   type ActivitySessionMatch,
   type AthleteProfile,
   type GarminActivity,
+  type PerformanceResponse,
+  type PlannedSessionOccurrence,
   type SessionExecution,
   type SessionLog,
   type SessionStatus,
@@ -33,6 +37,8 @@ const KEYS = {
   activities: "ridelab:activities",
   matches: "ridelab:matches",
   calendarDemoSeeded: "ridelab:calendarDemoSeeded",
+  performance: "ridelab:performance",
+  occurrences: "ridelab:occurrences",
 } as const;
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
@@ -47,6 +53,15 @@ async function readJson<T>(key: string, fallback: T): Promise<T> {
 
 async function writeJson(key: string, value: unknown): Promise<void> {
   await AsyncStorage.setItem(key, JSON.stringify(value));
+}
+
+/**
+ * Id con sufijo aleatorio, no sólo `Date.now()`: dos llamadas sincrónicas
+ * dentro del mismo milisegundo (p. ej. `finish()` seguido de `repeatNow()`)
+ * generarían el mismo id y una pisaría a la otra.
+ */
+function uniqueId(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 /** Repositorio de planes de entrenamiento. */
@@ -199,7 +214,7 @@ export const sessionExecutionRepository = {
 
   async start(plannedSessionId: string): Promise<SessionExecution> {
     return sessionExecutionRepository.save({
-      id: `exec_${plannedSessionId}_${Date.now()}`,
+      id: uniqueId(`exec_${plannedSessionId}`),
       plannedSessionId,
       startedAt: new Date().toISOString(),
       status: "started",
@@ -220,7 +235,7 @@ export const sessionExecutionRepository = {
     const base: SessionExecution =
       existing?.status === "started"
         ? existing
-        : { id: `exec_${plannedSessionId}_${Date.now()}`, plannedSessionId, startedAt: now, status: "started" };
+        : { id: uniqueId(`exec_${plannedSessionId}`), plannedSessionId, startedAt: now, status: "started" };
 
     return sessionExecutionRepository.save({
       ...base,
@@ -228,6 +243,77 @@ export const sessionExecutionRepository = {
       status: "completed",
       ...patch,
     });
+  },
+
+  /**
+   * Repite una sesión ya completada, ahora mismo. Crea occurrence + execution
+   * nuevas con `origin: "repeated"` — nunca toca la ejecución original (ni su
+   * fecha, RPE ni vínculo con Garmin).
+   */
+  async repeatNow(templateId: string, sourceExecutionId: string): Promise<SessionExecution> {
+    const occurrence = await plannedSessionOccurrenceRepository.save({
+      id: uniqueId(`occ_${templateId}`),
+      templateId,
+      origin: "repeated",
+      status: "started",
+      sourceOccurrenceId: sourceExecutionId,
+    });
+
+    return sessionExecutionRepository.save({
+      id: uniqueId(`exec_${templateId}`),
+      plannedSessionId: templateId,
+      startedAt: new Date().toISOString(),
+      status: "started",
+      occurrenceId: occurrence.id,
+      sourceExecutionId,
+    });
+  },
+
+  /** Programa una repetición para otro día, sin iniciar nada todavía. */
+  async repeatSchedule(
+    templateId: string,
+    sourceExecutionId: string,
+    scheduledDate: string,
+  ): Promise<PlannedSessionOccurrence> {
+    return plannedSessionOccurrenceRepository.save({
+      id: uniqueId(`occ_${templateId}`),
+      templateId,
+      scheduledDate,
+      origin: "repeated",
+      status: "planned",
+      sourceOccurrenceId: sourceExecutionId,
+    });
+  },
+};
+
+/**
+ * Ocurrencias de sesiones planificadas. Las del plan original nunca generan
+ * una fila acá (su propio id de plan ya es su identidad implícita) — sólo
+ * existen para repeticiones (`origin: "repeated"`).
+ */
+export const plannedSessionOccurrenceRepository = {
+  async list(): Promise<PlannedSessionOccurrence[]> {
+    const raw = await readJson<unknown[]>(KEYS.occurrences, []);
+    return raw
+      .map((item) => plannedSessionOccurrenceSchema.safeParse(item))
+      .filter((result): result is { success: true; data: PlannedSessionOccurrence } => result.success)
+      .map((result) => result.data);
+  },
+
+  async save(candidate: PlannedSessionOccurrence): Promise<PlannedSessionOccurrence> {
+    const parsed = plannedSessionOccurrenceSchema.parse(candidate);
+    const occurrences = await plannedSessionOccurrenceRepository.list();
+    await writeJson(
+      KEYS.occurrences,
+      [...occurrences.filter((occurrence) => occurrence.id !== parsed.id), parsed],
+    );
+    return parsed;
+  },
+
+  async forTemplate(templateId: string): Promise<PlannedSessionOccurrence[]> {
+    return (await plannedSessionOccurrenceRepository.list()).filter(
+      (occurrence) => occurrence.templateId === templateId,
+    );
   },
 };
 
@@ -384,6 +470,33 @@ export const calendarDemoSeedRepository = {
   },
   async markSeeded(): Promise<void> {
     await AsyncStorage.setItem(KEYS.calendarDemoSeeded, "true");
+  },
+};
+
+export interface StoredPerformance {
+  response: PerformanceResponse;
+  updatedAt: string;
+}
+
+/**
+ * Último snapshot/assessment/guidance válidos de Estado. Nunca se borra ante
+ * un error de "Actualizar" — sólo se reemplaza cuando llega uno nuevo válido.
+ */
+export const performanceRepository = {
+  async get(): Promise<StoredPerformance | undefined> {
+    const raw = await readJson<unknown>(KEYS.performance, undefined);
+    if (!raw || typeof raw !== "object") return undefined;
+    const candidate = raw as { response?: unknown; updatedAt?: unknown };
+    const parsed = performanceResponseSchema.safeParse(candidate.response);
+    if (!parsed.success || typeof candidate.updatedAt !== "string") return undefined;
+    return { response: parsed.data, updatedAt: candidate.updatedAt };
+  },
+
+  async save(response: PerformanceResponse): Promise<StoredPerformance> {
+    const parsed = performanceResponseSchema.parse(response);
+    const stored: StoredPerformance = { response: parsed, updatedAt: new Date().toISOString() };
+    await writeJson(KEYS.performance, stored);
+    return stored;
   },
 };
 

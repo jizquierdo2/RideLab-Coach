@@ -11,6 +11,7 @@ import {
   activitySessionMatchRepository,
   clearAllData,
   garminActivityRepository,
+  plannedSessionOccurrenceRepository,
   planRepository,
   profileRepository,
   sessionExecutionRepository,
@@ -182,6 +183,58 @@ describe("sessionExecutionRepository", () => {
     expect(reopened).toHaveLength(1);
     expect(reopened[0].status).toBe("completed");
     expect(reopened[0].actualRpe).toBe(8);
+  });
+});
+
+describe("repetir sesión", () => {
+  it("repeatNow crea una ejecución nueva sin modificar la original", async () => {
+    await sessionExecutionRepository.start("w1-d1");
+    const original = await sessionExecutionRepository.finish("w1-d1", { actualRpe: 7 });
+
+    const repeated = await sessionExecutionRepository.repeatNow("w1-d1", original.id);
+
+    expect(repeated.id).not.toBe(original.id);
+    expect(repeated.status).toBe("started");
+    expect(repeated.sourceExecutionId).toBe(original.id);
+    expect(repeated.occurrenceId).toBeDefined();
+
+    // La original queda intacta: mismo RPE, mismo estado, misma fecha.
+    const stillThere = (await sessionExecutionRepository.list()).find((e) => e.id === original.id);
+    expect(stillThere?.actualRpe).toBe(7);
+    expect(stillThere?.status).toBe("completed");
+    expect(stillThere?.startedAt).toBe(original.startedAt);
+  });
+
+  it("repeatNow crea la occurrence con origin 'repeated'", async () => {
+    const execution = await sessionExecutionRepository.start("w1-d1");
+    const repeated = await sessionExecutionRepository.repeatNow("w1-d1", execution.id);
+
+    const occurrence = (await plannedSessionOccurrenceRepository.list()).find((o) => o.id === repeated.occurrenceId);
+    expect(occurrence?.origin).toBe("repeated");
+    expect(occurrence?.templateId).toBe("w1-d1");
+  });
+
+  it("repeatSchedule programa una occurrence para otro día sin crear una ejecución", async () => {
+    const execution = await sessionExecutionRepository.start("w1-d1");
+    await sessionExecutionRepository.finish("w1-d1", { actualRpe: 6 });
+
+    const occurrence = await sessionExecutionRepository.repeatSchedule("w1-d1", execution.id, "2026-09-01");
+
+    expect(occurrence.status).toBe("planned");
+    expect(occurrence.scheduledDate).toBe("2026-09-01");
+    expect(occurrence.origin).toBe("repeated");
+
+    const executions = await sessionExecutionRepository.list();
+    expect(executions).toHaveLength(1); // sólo la original — programar no inicia nada
+  });
+
+  it("las occurrences sobreviven un reinicio", async () => {
+    const execution = await sessionExecutionRepository.start("w1-d1");
+    await sessionExecutionRepository.repeatSchedule("w1-d1", execution.id, "2026-09-01");
+
+    const reopened = await plannedSessionOccurrenceRepository.forTemplate("w1-d1");
+    expect(reopened).toHaveLength(1);
+    expect(reopened[0].scheduledDate).toBe("2026-09-01");
   });
 });
 

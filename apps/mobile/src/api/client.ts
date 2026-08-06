@@ -1,6 +1,13 @@
 import { Platform } from "react-native";
 import Constants from "expo-constants";
-import type { CatalogExercise, ChatRequest, ChatResponse, GarminActivity, GarminStatus } from "@ridelab/shared";
+import type {
+  CatalogExercise,
+  ChatRequest,
+  ChatResponse,
+  GarminActivity,
+  GarminStatus,
+  PerformanceResponse,
+} from "@ridelab/shared";
 
 /** Puerto donde escucha el backend. */
 const BACKEND_PORT = 8787;
@@ -123,6 +130,8 @@ export const api = {
 
   disconnectGarmin: () =>
     request<{ connected: false }>("/api/garmin/disconnect", { method: "POST" }),
+
+  getPerformance: () => request<PerformanceResponse>("/api/garmin/performance"),
 
   getGarminActivities: (startDate: string, endDate: string) =>
     request<{ activities: GarminActivity[] }>(

@@ -25,6 +25,8 @@ const ICON_MAP = {
   checkCircleFilled: "check-circle",
   checkCircleOutline: "radio-button-unchecked",
   trendingDown: "trending-down",
+  trendingUp: "trending-up",
+  trendingFlat: "trending-flat",
   warning: "warning",
   info: "info-outline",
   save: "save",
@@ -46,6 +48,8 @@ const ICON_MAP = {
   watch: "watch",
   today: "today",
   close: "close",
+  repeat: "replay",
+  event: "event",
 } as const satisfies Record<string, MaterialIconName>;
 
 export type IconRole = keyof typeof ICON_MAP;

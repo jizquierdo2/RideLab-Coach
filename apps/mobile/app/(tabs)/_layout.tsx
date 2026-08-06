@@ -5,7 +5,7 @@ import { Icon } from "../../src/components/icon";
 import { colors, spacing, typography } from "../../src/theme";
 
 /**
- * Tres pestañas: Chat (inicial), Entrenamiento y Calendario.
+ * Cuatro pestañas: Chat (inicial), Estado, Entrenamiento y Calendario.
  * Los detalles se abren apilados, no como pestañas extra.
  */
 export default function TabsLayout() {
@@ -24,6 +24,13 @@ export default function TabsLayout() {
         options={{
           title: "Chat",
           tabBarIcon: ({ color }) => <Icon role="coach" size={22} color={color as string} />,
+        }}
+      />
+      <Tabs.Screen
+        name="estado"
+        options={{
+          title: "Estado",
+          tabBarIcon: ({ color }) => <Icon role="heartRate" size={22} color={color as string} />,
         }}
       />
       <Tabs.Screen

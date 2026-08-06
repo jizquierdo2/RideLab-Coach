@@ -1,4 +1,5 @@
 import {
+  formatSantiagoDayLabel,
   santiagoDayKey,
   toPlannedSession,
   type ActivitySessionMatch,
@@ -159,6 +160,8 @@ export function buildChatTrainingHistoryEntries(
     garminAerobicTrainingEffect: record.garminActivity?.aerobicTrainingEffect,
     garminAnaerobicTrainingEffect: record.garminActivity?.anaerobicTrainingEffect,
     matchStatus: record.match?.status,
+    origin: record.execution.sourceExecutionId ? "repeated" : "plan",
+    sourceExecutionId: record.execution.sourceExecutionId,
   }));
 
   const freeActivityEntries: ChatTrainingHistoryEntry[] = unlinked.map((activity) => ({
@@ -175,6 +178,21 @@ export function buildChatTrainingHistoryEntries(
   }));
 
   return [...sessionEntries, ...freeActivityEntries].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Texto secundario para una ejecución repetida, p. ej. "Repetida desde la
+ * sesión del 5 de agosto". `undefined` si `execution` no viene de una
+ * repetición o si ya no se encuentra la ejecución original (se descartó).
+ */
+export function repeatedFromLabel(
+  execution: SessionExecution,
+  executions: SessionExecution[],
+): string | undefined {
+  if (!execution.sourceExecutionId) return undefined;
+  const source = executions.find((item) => item.id === execution.sourceExecutionId);
+  if (!source) return undefined;
+  return `Repetida desde la sesión del ${formatSantiagoDayLabel(source.startedAt)}`;
 }
 
 export function dateKey(date: Date): string {

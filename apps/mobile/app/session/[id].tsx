@@ -1,9 +1,10 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, useRouter, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   findExercise,
+  formatSantiagoDayLabel,
   needsPainEscalation,
   PAIN_ESCALATION_MESSAGE,
   VIDEO_PENDING_LABEL,
@@ -14,6 +15,7 @@ import {
 import { useApp } from "../../src/state/AppContext";
 import { Badge, Button, Card, EmptyState, Loading, Notice, SectionHeader } from "../../src/components/ui";
 import { Icon, type IconRole } from "../../src/components/icon";
+import { repeatedFromLabel } from "../../src/lib/calendar";
 import { countExercises, findSession, recoveryAdvice } from "../../src/lib/plan";
 import { colors, featureCardToneColor, radius, spacing, TOUCH_TARGET, typography } from "../../src/theme";
 
@@ -30,8 +32,12 @@ export default function SessionScreen() {
     markSession,
     logs,
     executions,
+    activities,
+    matches,
     startSession,
     finishSessionExecution,
+    pendingLoadsPrefillExecutionId,
+    clearLoadsPrefill,
     garminStatus,
   } = useApp();
 
@@ -73,6 +79,35 @@ export default function SessionScreen() {
   const [saveError, setSaveError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
   const [adjustmentApplied, setAdjustmentApplied] = useState(false);
+
+  // El log más reciente de esta sesión planificada: "cargas de la última vez" y
+  // la información que se muestra en la tarjeta "¿Quieres repetirla?".
+  const lastLog = useMemo(
+    () =>
+      logs
+        .filter((log) => log.sessionId === id)
+        .sort((a, b) => a.completedAt.localeCompare(b.completedAt))
+        .at(-1),
+    [logs, id],
+  );
+
+  // Precarga cargas/reps desde `lastLog` una sola vez, sólo cuando venimos de
+  // "Repetir sesión" con el switch activado (`pendingLoadsPrefillExecutionId`
+  // apunta a la ejecución recién creada) — nunca copia RPE, dolor ni el
+  // vínculo con Garmin, y el usuario sigue pudiendo editarlas.
+  useEffect(() => {
+    if (!execution || execution.id !== pendingLoadsPrefillExecutionId || !lastLog) return;
+
+    const nextLoads: Record<string, string> = {};
+    const nextReps: Record<string, string> = {};
+    for (const exerciseLog of lastLog.exercises) {
+      if (exerciseLog.load) nextLoads[exerciseLog.exerciseId] = exerciseLog.load;
+      if (exerciseLog.actualReps) nextReps[exerciseLog.exerciseId] = exerciseLog.actualReps;
+    }
+    setLoads(nextLoads);
+    setReps(nextReps);
+    clearLoadsPrefill();
+  }, [execution, pendingLoadsPrefillExecutionId, lastLog, clearLoadsPrefill]);
 
   const advice = useMemo(
     () =>
@@ -201,6 +236,29 @@ export default function SessionScreen() {
           </Pressable>
         ) : execution.status === "started" ? (
           <Notice text={`Sesión en curso desde las ${new Date(execution.startedAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}.`} tone="info" />
+        ) : null}
+
+        {execution ? (
+          (() => {
+            const originLabel = repeatedFromLabel(execution, executions);
+            return originLabel ? <Notice text={originLabel} tone="info" /> : null;
+          })()
+        ) : null}
+
+        {execution?.status === "completed" ? (
+          <RepeatSessionCard
+            execution={execution}
+            lastLog={lastLog}
+            garminActivityName={
+              activities.find(
+                (activity) =>
+                  activity.id ===
+                  matches.find((match) => match.sessionExecutionId === execution.id && match.status !== "rejected")
+                    ?.garminActivityId,
+              )?.name
+            }
+            onRepeat={() => router.push(`/session/repeat/${session.id}`)}
+          />
         ) : null}
 
         {advice ? (
@@ -447,6 +505,62 @@ function ExerciseCard({
   );
 }
 
+/** Tarjeta "¿Quieres repetirla?" para una sesión ya completada: resume la última vez y ofrece repetirla. */
+function RepeatSessionCard({
+  execution,
+  lastLog,
+  garminActivityName,
+  onRepeat,
+}: {
+  execution: { startedAt: string; finishedAt?: string; actualRpe?: number };
+  lastLog: SessionLog | undefined;
+  garminActivityName: string | undefined;
+  onRepeat: () => void;
+}) {
+  const durationMinutes =
+    execution.finishedAt !== undefined
+      ? Math.round((new Date(execution.finishedAt).getTime() - new Date(execution.startedAt).getTime()) / 60_000)
+      : undefined;
+
+  const loadsUsed = (lastLog?.exercises ?? [])
+    .filter((exercise) => exercise.load || exercise.actualReps)
+    .slice(0, 3);
+
+  return (
+    <View style={styles.repeatCard}>
+      <View style={styles.repeatHeadRow}>
+        <Icon role="repeat" size={20} color={colors.accent} />
+        <Text style={styles.repeatTitle}>¿Quieres repetirla?</Text>
+      </View>
+      <Text style={styles.repeatMeta}>
+        {[
+          `Última vez: ${formatSantiagoDayLabel(execution.startedAt)}`,
+          durationMinutes !== undefined ? `${durationMinutes} min` : undefined,
+          execution.actualRpe !== undefined ? `RPE ${execution.actualRpe}` : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </Text>
+      {loadsUsed.length > 0 ? (
+        <View style={styles.repeatLoads}>
+          {loadsUsed.map((exercise) => (
+            <Text key={exercise.exerciseId} style={styles.repeatLoadLine}>
+              • {exercise.name}: {[exercise.load, exercise.actualReps].filter(Boolean).join(" · ")}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+      {garminActivityName ? (
+        <Text style={styles.repeatGarmin}>Vinculada a Garmin: {garminActivityName}</Text>
+      ) : null}
+      <Pressable accessibilityRole="button" onPress={onRepeat} style={styles.repeatButton}>
+        <Icon role="repeat" size={16} color={colors.onAccent} />
+        <Text style={styles.repeatButtonText}>Repetir sesión</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 /** Escala táctil de 0-10 / 1-10, cómoda con el pulgar. */
 function Scale({
   value,
@@ -617,4 +731,30 @@ const styles = StyleSheet.create({
   scaleTextActive: { color: colors.onAccent },
 
   footerActions: { gap: spacing.sm },
+
+  repeatCard: {
+    backgroundColor: colors.surfaceContainerLow,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  repeatHeadRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  repeatTitle: { ...typography.subtitle, color: colors.text },
+  repeatMeta: { ...typography.caption, color: colors.textMuted },
+  repeatLoads: { gap: 2 },
+  repeatLoadLine: { ...typography.caption, color: colors.textFaint, lineHeight: 17 },
+  repeatGarmin: { ...typography.caption, color: colors.primary },
+  repeatButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    minHeight: TOUCH_TARGET,
+    borderRadius: radius.md,
+    backgroundColor: colors.accent,
+    marginTop: spacing.xs,
+  },
+  repeatButtonText: { ...typography.bodyStrong, color: colors.onAccent },
 });

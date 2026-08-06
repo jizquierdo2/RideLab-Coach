@@ -11,6 +11,8 @@ import {
   type ChatMessage,
   type GarminActivity,
   type GarminStatus,
+  type PerformanceResponse,
+  type PlannedSessionOccurrence,
   type SessionExecution,
   type SessionLog,
   type SessionStatus,
@@ -22,7 +24,9 @@ import {
   activitySessionMatchRepository,
   calendarDemoSeedRepository,
   garminActivityRepository,
+  performanceRepository,
   planRepository,
+  plannedSessionOccurrenceRepository,
   profileRepository,
   sessionExecutionRepository,
   sessionLogRepository,
@@ -37,6 +41,7 @@ const STALE_SYNC_MINUTES = 15;
 const TRAINING_HISTORY_WINDOW_DAYS = 60;
 
 export type GarminSyncStatus = "idle" | "syncing" | "synced" | "offline" | "error";
+export type PerformanceStatus = "idle" | "loading" | "loaded" | "error";
 
 /**
  * Estado global de la app.
@@ -52,10 +57,17 @@ interface AppState {
   sessionStatus: Record<string, SessionStatus>;
   logs: SessionLog[];
   executions: SessionExecution[];
+  occurrences: PlannedSessionOccurrence[];
+  /** Id de la ejecución para la que `session/[id]` debe precargar cargas de la última vez; `undefined` si no aplica. */
+  pendingLoadsPrefillExecutionId: string | undefined;
   activities: GarminActivity[];
   matches: ActivitySessionMatch[];
   garminSyncStatus: GarminSyncStatus;
   lastGarminSyncAt: string | undefined;
+  performanceResponse: PerformanceResponse | undefined;
+  performanceUpdatedAt: string | undefined;
+  performanceStatus: PerformanceStatus;
+  performanceError: string | undefined;
   profile: AthleteProfile | undefined;
   messages: ChatMessage[];
   garminStatus: GarminStatus;
@@ -76,6 +88,21 @@ interface AppActions {
     plannedSessionId: string,
     patch: { actualRpe?: number; painLevel?: number; notes?: string },
   ) => Promise<SessionExecution>;
+  /**
+   * Repite una sesión completada ahora mismo: nueva occurrence + execution con
+   * origin "repeated". Si `useLastLoads` es true, marca esa ejecución en
+   * `pendingLoadsPrefillExecutionId` para que `session/[id]` precargue cargas
+   * y reps de la última vez (sin copiar RPE, dolor ni el vínculo con Garmin).
+   */
+  repeatSessionNow: (templateId: string, sourceExecutionId: string, useLastLoads: boolean) => Promise<SessionExecution>;
+  /** Programa la repetición de una sesión completada para otro día, sin iniciar nada todavía. */
+  repeatSessionSchedule: (
+    templateId: string,
+    sourceExecutionId: string,
+    scheduledDate: string,
+  ) => Promise<PlannedSessionOccurrence>;
+  /** Limpia `pendingLoadsPrefillExecutionId` una vez que la pantalla de sesión ya aplicó la precarga. */
+  clearLoadsPrefill: () => void;
   /** Trae actividades del backend, las persiste (idempotente) y corre el matcher. */
   syncGarminActivities: () => Promise<void>;
   confirmMatch: (
@@ -85,6 +112,8 @@ interface AppActions {
   ) => Promise<void>;
   rejectMatch: (sessionExecutionId: string, garminActivityId: string) => Promise<void>;
   unlinkMatch: (sessionExecutionId: string, garminActivityId: string) => Promise<void>;
+  /** Trae snapshot+assessment+guidance para Estado. Mantiene lo anterior visible si falla. */
+  refreshPerformance: () => Promise<void>;
   updateProfile: (patch: Partial<AthleteProfile>) => Promise<void>;
   refreshGarminStatus: () => Promise<void>;
   clearChatError: () => void;
@@ -105,10 +134,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [sessionStatus, setSessionStatus] = useState<Record<string, SessionStatus>>({});
   const [logs, setLogs] = useState<SessionLog[]>([]);
   const [executions, setExecutions] = useState<SessionExecution[]>([]);
+  const [occurrences, setOccurrences] = useState<PlannedSessionOccurrence[]>([]);
+  const [pendingLoadsPrefillExecutionId, setPendingLoadsPrefillExecutionId] = useState<string | undefined>();
   const [activities, setActivities] = useState<GarminActivity[]>([]);
   const [matches, setMatches] = useState<ActivitySessionMatch[]>([]);
   const [garminSyncStatus, setGarminSyncStatus] = useState<GarminSyncStatus>("idle");
   const [lastGarminSyncAt, setLastGarminSyncAt] = useState<string | undefined>();
+  const [performanceResponse, setPerformanceResponse] = useState<PerformanceResponse | undefined>();
+  const [performanceUpdatedAt, setPerformanceUpdatedAt] = useState<string | undefined>();
+  const [performanceStatus, setPerformanceStatus] = useState<PerformanceStatus>("idle");
+  const [performanceError, setPerformanceError] = useState<string | undefined>();
   const [profile, setProfile] = useState<AthleteProfile | undefined>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [garminStatus, setGarminStatus] = useState<GarminStatus>(INITIAL_GARMIN_STATUS);
@@ -127,18 +162,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         storedStatus,
         storedLogs,
         storedExecutions,
+        storedOccurrences,
         storedActivities,
         storedMatches,
         storedProfile,
+        storedPerformance,
       ] = await Promise.all([
         planRepository.list(),
         planRepository.getActiveId(),
         sessionStatusRepository.all(),
         sessionLogRepository.list(),
         sessionExecutionRepository.list(),
+        plannedSessionOccurrenceRepository.list(),
         garminActivityRepository.list(),
         activitySessionMatchRepository.list(),
         profileRepository.get(),
+        performanceRepository.get(),
       ]);
 
       setPlans(storedPlans);
@@ -146,9 +185,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setSessionStatus(storedStatus);
       setLogs(storedLogs);
       setExecutions(storedExecutions);
+      setOccurrences(storedOccurrences);
       setActivities(storedActivities);
       setMatches(storedMatches);
       setProfile(storedProfile);
+      if (storedPerformance) {
+        setPerformanceResponse(storedPerformance.response);
+        setPerformanceUpdatedAt(storedPerformance.updatedAt);
+        setPerformanceStatus("loaded");
+      }
       setReady(true);
     })();
   }, []);
@@ -279,6 +324,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const repeatSessionNow = useCallback(async (templateId: string, sourceExecutionId: string, useLastLoads: boolean) => {
+    const execution = await sessionExecutionRepository.repeatNow(templateId, sourceExecutionId);
+    setExecutions(await sessionExecutionRepository.list());
+    setOccurrences(await plannedSessionOccurrenceRepository.list());
+    setPendingLoadsPrefillExecutionId(useLastLoads ? execution.id : undefined);
+    return execution;
+  }, []);
+
+  const repeatSessionSchedule = useCallback(
+    async (templateId: string, sourceExecutionId: string, scheduledDate: string) => {
+      const occurrence = await sessionExecutionRepository.repeatSchedule(templateId, sourceExecutionId, scheduledDate);
+      setOccurrences(await plannedSessionOccurrenceRepository.list());
+      return occurrence;
+    },
+    [],
+  );
+
   /** Duración planificada de una sesión, buscando entre todos los planes guardados (no sólo el activo). */
   const plannedDurationFor = useCallback(
     (plannedSessionId: string): number => {
@@ -390,6 +452,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setMatches(await activitySessionMatchRepository.list());
   }, []);
 
+  const refreshPerformance = useCallback(async () => {
+    // El snapshot anterior se queda visible durante la carga y si falla — nunca se borra.
+    setPerformanceStatus("loading");
+    setPerformanceError(undefined);
+    try {
+      const response = await api.getPerformance();
+      const stored = await performanceRepository.save(response);
+      setPerformanceResponse(stored.response);
+      setPerformanceUpdatedAt(stored.updatedAt);
+      setPerformanceStatus("loaded");
+    } catch (error) {
+      setPerformanceStatus("error");
+      setPerformanceError(
+        error instanceof ApiError ? error.message : "No se pudo actualizar tu estado. Inténtalo de nuevo.",
+      );
+    }
+  }, []);
+
   // Siembra el escenario demo del 5 de agosto una sola vez, y sólo mientras Garmin
   // está en modo simulado — nunca mezcla datos falsos con una cuenta real.
   useEffect(() => {
@@ -434,6 +514,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setProfile(await profileRepository.merge(patch));
   }, []);
 
+  const clearLoadsPrefill = useCallback(() => setPendingLoadsPrefillExecutionId(undefined), []);
+
   const value = useMemo(
     () => ({
       ready,
@@ -442,10 +524,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       sessionStatus,
       logs,
       executions,
+      occurrences,
+      pendingLoadsPrefillExecutionId,
       activities,
       matches,
       garminSyncStatus,
       lastGarminSyncAt,
+      performanceResponse,
+      performanceUpdatedAt,
+      performanceStatus,
+      performanceError,
       profile,
       messages,
       garminStatus,
@@ -458,10 +546,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       saveLog,
       startSession,
       finishSessionExecution,
+      repeatSessionNow,
+      repeatSessionSchedule,
+      clearLoadsPrefill,
       syncGarminActivities,
       confirmMatch,
       rejectMatch,
       unlinkMatch,
+      refreshPerformance,
       updateProfile,
       refreshGarminStatus,
       clearChatError: () => setChatError(undefined),
@@ -473,10 +565,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       sessionStatus,
       logs,
       executions,
+      occurrences,
+      pendingLoadsPrefillExecutionId,
       activities,
       matches,
       garminSyncStatus,
       lastGarminSyncAt,
+      performanceResponse,
+      performanceUpdatedAt,
+      performanceStatus,
+      performanceError,
       profile,
       messages,
       garminStatus,
@@ -489,10 +587,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       saveLog,
       startSession,
       finishSessionExecution,
+      repeatSessionNow,
+      repeatSessionSchedule,
+      clearLoadsPrefill,
       syncGarminActivities,
       confirmMatch,
       rejectMatch,
       unlinkMatch,
+      refreshPerformance,
       updateProfile,
       refreshGarminStatus,
     ],

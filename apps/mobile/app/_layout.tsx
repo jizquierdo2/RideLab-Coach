@@ -42,6 +42,10 @@ export default function RootLayout() {
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="session/[id]" options={{ title: "Sesión" }} />
           <Stack.Screen
+            name="session/repeat/[id]"
+            options={{ title: "Repetir sesión", presentation: "modal" }}
+          />
+          <Stack.Screen
             name="exercise/[id]"
             options={{ title: "Técnica", presentation: "modal" }}
           />
@@ -53,6 +57,7 @@ export default function RootLayout() {
             name="calendar/match/[activityId]"
             options={{ title: "Vincular", presentation: "modal" }}
           />
+          <Stack.Screen name="estado/all-metrics" options={{ title: "Todas las métricas" }} />
         </Stack>
       </AppProvider>
     </SafeAreaProvider>

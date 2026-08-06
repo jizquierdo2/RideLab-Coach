@@ -7,7 +7,7 @@ import {
   DEMO_PLAN_ID,
   type ActivitySessionMatch,
 } from "@ridelab/shared";
-import { buildChatTrainingHistoryEntries, buildCombinedRecords, findPlannedSession } from "./calendar";
+import { buildChatTrainingHistoryEntries, buildCombinedRecords, findPlannedSession, repeatedFromLabel } from "./calendar";
 
 const plan = buildDemoPlan(new Date("2026-08-04T12:00:00.000Z"));
 const execution = buildDemoSessionExecution();
@@ -55,5 +55,38 @@ describe("buildChatTrainingHistoryEntries", () => {
     const free = entries.find((entry) => entry.kind === "freeActivity");
     expect(free?.plannedSessionId).toBeUndefined();
     expect(free?.garminActivityName).toBe(freeRide.name);
+  });
+
+  it("marca origin 'plan' para una ejecución sin sourceExecutionId y 'repeated' cuando lo tiene", () => {
+    const [planEntry] = buildChatTrainingHistoryEntries([plan], [execution], [], []);
+    expect(planEntry.origin).toBe("plan");
+    expect(planEntry.sourceExecutionId).toBeUndefined();
+
+    const repeated = { ...execution, id: "exec_repeat", sourceExecutionId: execution.id };
+    const [, repeatedEntry] = buildChatTrainingHistoryEntries([plan], [execution, repeated], [], []);
+    expect(repeatedEntry.origin).toBe("repeated");
+    expect(repeatedEntry.sourceExecutionId).toBe(execution.id);
+  });
+});
+
+describe("repeatedFromLabel", () => {
+  it("no dice nada para una ejecución que no es una repetición", () => {
+    expect(repeatedFromLabel(execution, [execution])).toBeUndefined();
+  });
+
+  it("arma el texto 'Repetida desde…' cuando encuentra la ejecución original", () => {
+    const repeated = { ...execution, id: "exec_repeat", sourceExecutionId: execution.id };
+    expect(repeatedFromLabel(repeated, [execution, repeated])).toBe(
+      `Repetida desde la sesión del ${new Intl.DateTimeFormat("es-CL", {
+        timeZone: "America/Santiago",
+        day: "numeric",
+        month: "long",
+      }).format(new Date(execution.startedAt))}`,
+    );
+  });
+
+  it("no dice nada si la ejecución original ya no está disponible", () => {
+    const repeated = { ...execution, id: "exec_repeat", sourceExecutionId: "exec_desaparecida" };
+    expect(repeatedFromLabel(repeated, [repeated])).toBeUndefined();
   });
 });
