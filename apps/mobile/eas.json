@@ -6,6 +6,9 @@
   "build": {
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://ridelabserver-production.up.railway.app"
+      },
       "android": {
         "buildType": "apk"
       }
