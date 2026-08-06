@@ -22,6 +22,15 @@ export function formatSantiagoTime(iso: string): string {
   }).format(new Date(iso));
 }
 
+/** Día local en Santiago en prosa, p. ej. "5 de agosto". Para referencias legibles ("Repetida desde…"). */
+export function formatSantiagoDayLabel(iso: string): string {
+  return new Intl.DateTimeFormat("es-CL", {
+    timeZone: SANTIAGO_TZ,
+    day: "numeric",
+    month: "long",
+  }).format(new Date(iso));
+}
+
 /** Minutos de superposición entre dos rangos ISO. 0 si no se solapan. */
 export function overlapMinutes(aStart: string, aEnd: string, bStart: string, bEnd: string): number {
   const start = Math.max(new Date(aStart).getTime(), new Date(bStart).getTime());

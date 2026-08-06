@@ -103,6 +103,10 @@ export const chatTrainingHistoryEntrySchema = z.object({
   garminAnaerobicTrainingEffect: z.number().optional(),
   /** Estado del vínculo con Garmin; ausente si es una actividad libre o sin vincular. */
   matchStatus: z.enum(["confirmed", "suggested", "rejected"]).optional(),
+  /** "repeated" si esta ejecución nace de "repetir sesión"; ausente/"plan" si viene del plan original. */
+  origin: z.enum(["plan", "repeated"]).optional(),
+  /** Id de la ejecución original que se repitió, sólo presente cuando `origin` es "repeated". */
+  sourceExecutionId: z.string().optional(),
 });
 
 export type ChatTrainingHistoryEntry = z.infer<typeof chatTrainingHistoryEntrySchema>;

@@ -64,6 +64,8 @@ export const trainingSessionSchema = z.object({
   estimatedMinutes: z.number().int().positive().max(400),
   scheduledDate: isoDate.optional(),
   sections: z.array(trainingSectionSchema).min(1, "Una sesión necesita al menos una sección"),
+  /** Versión de la plantilla, para "repetir sesión". Ausente = versión 1 (planes ya existentes). */
+  version: z.number().int().positive().optional(),
 });
 
 export const trainingWeekSchema = z.object({

@@ -15,9 +15,36 @@ export const sessionExecutionSchema = z.object({
   actualRpe: z.number().int().min(1).max(10).optional(),
   painLevel: z.number().int().min(0).max(10).optional(),
   notes: z.string().optional(),
+  /**
+   * Campos opcionales para "repetir sesión" — migración compatible, no una
+   * reescritura. Ausentes en toda ejecución que ya existía antes de esto
+   * (las del plan original), presentes sólo en repeticiones. `plannedSessionId`
+   * sigue siendo el id de la plantilla, exactamente como antes: el matcher y
+   * Calendario no necesitan saber que esto existe.
+   */
+  occurrenceId: z.string().optional(),
+  templateVersion: z.number().int().positive().optional(),
+  sourceExecutionId: z.string().optional(),
 });
 
 export type SessionExecution = z.infer<typeof sessionExecutionSchema>;
+
+/**
+ * Ocurrencia de una sesión planificada: la del plan original (`origin: "plan"`,
+ * nunca se persiste — su propio id de plan ya hace de identidad implícita) o
+ * una repetición (`origin: "repeated"`, sí se persiste). Sólo existe como
+ * entidad real cuando alguien repite una sesión.
+ */
+export const plannedSessionOccurrenceSchema = z.object({
+  id: z.string().min(1),
+  templateId: z.string().min(1),
+  scheduledDate: z.string().optional(),
+  sourceOccurrenceId: z.string().optional(),
+  origin: z.enum(["plan", "repeated"]),
+  status: z.enum(["planned", "started", "completed", "skipped"]),
+});
+
+export type PlannedSessionOccurrence = z.infer<typeof plannedSessionOccurrenceSchema>;
 
 /**
  * Actividad sincronizada desde Garmin.
