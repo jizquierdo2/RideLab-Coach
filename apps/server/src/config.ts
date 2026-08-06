@@ -35,6 +35,21 @@ export const config = {
      */
     email: process.env.GARMIN_EMAIL ?? "",
     password: process.env.GARMIN_PASSWORD ?? "",
+
+    /**
+     * Tokens OAuth de Garmin ya autenticados, en base64, opcionales.
+     *
+     * Un login NUEVO (usuario/clave) puede quedar limitado por Garmin desde
+     * la IP de ciertos hosts (verificado: el mismo login funciona al toque
+     * desde otra red) — pero una sesión ya autenticada no tiene ese problema.
+     * Si están presentes, se siembran en `~/.garmin-mcp/*.json` al arrancar
+     * para que el proceso del MCP nunca tenga que pisar el login bloqueado.
+     * Se generan localmente desde una red que sí puede loguearse; ver
+     * `garmin/token-seed.ts`.
+     */
+    oauth1TokenB64: process.env.GARMIN_OAUTH1_TOKEN_B64 ?? "",
+    oauth2TokenB64: process.env.GARMIN_OAUTH2_TOKEN_B64 ?? "",
+    profileB64: process.env.GARMIN_PROFILE_B64 ?? "",
   },
 
   /** Endpoint de un agente ya desplegado, si existe. Alternativa al par OpenAI + MCP. */
