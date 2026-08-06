@@ -52,10 +52,20 @@ export class McpGarminDataProvider implements GarminDataProvider {
       const client = await this.connect();
       const result = await client.callTool({ name: "get_daily_summary", arguments: {} });
       if ((result as { isError?: boolean }).isError) {
+        console.warn("[garmin-mcp] verifyLogin: get_daily_summary respondió isError=true");
         return { ok: false, message: loginFailedMessage() };
       }
       return { ok: true };
-    } catch {
+    } catch (error) {
+      // El mensaje que ve el usuario es siempre el mismo (genérico, por la
+      // limitación real del paquete con MFA) — pero acá SÍ se registra la
+      // causa real, porque un fallo de infraestructura (timeout, npx sin red,
+      // proceso hijo que no pudo iniciar) se ve idéntico desde afuera y sin
+      // este log sería indiagnosticable en un entorno como Railway.
+      console.error(
+        "[garmin-mcp] verifyLogin falló:",
+        error instanceof Error ? error.message : error,
+      );
       return { ok: false, message: loginFailedMessage() };
     }
   }
