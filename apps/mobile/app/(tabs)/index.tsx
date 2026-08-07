@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -25,7 +26,18 @@ const PROMPT_ICONS: IconRole[] = ["recoveryGood", "bolt", "viewDetail", "calenda
 export default function ChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { ready, messages, sending, chatError, garminStatus, sendMessage, savePlan, plans } = useApp();
+  const {
+    ready,
+    messages,
+    sending,
+    sendingSince,
+    chatError,
+    garminStatus,
+    sendMessage,
+    cancelSending,
+    savePlan,
+    plans,
+  } = useApp();
 
   const [draft, setDraft] = useState("");
   const [savingPlanId, setSavingPlanId] = useState<string | undefined>();
@@ -158,7 +170,7 @@ export default function ChatScreen() {
 
         {savingPlanId ? <Loading label="Guardando plan…" /> : null}
         {saveError ? <Notice text={saveError} tone="error" /> : null}
-        {sending ? <Loading label="El coach está revisando tus datos…" /> : null}
+        {sending ? <ThinkingIndicator since={sendingSince} onCancel={cancelSending} /> : null}
         {chatError ? <Notice text={chatError} tone="error" /> : null}
       </ScrollView>
 
@@ -183,8 +195,72 @@ export default function ChatScreen() {
   );
 }
 
+/** Segundos a partir de los cuales se avisa que la espera puede ser larga. */
+const LONG_WAIT_SECONDS = 20;
+
+/**
+ * Espera del coach, con el tiempo real transcurrido y salida.
+ *
+ * No inventa etapas de progreso: el cliente no puede ver en qué va el backend,
+ * así que muestra lo único que sabe de verdad —cuánto lleva esperando— y avisa
+ * recién cuando la espera se vuelve inusual.
+ */
+function ThinkingIndicator({ since, onCancel }: { since: number | undefined; onCancel: () => void }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (since === undefined) return;
+    const tick = () => setElapsed(Math.floor((Date.now() - since) / 1000));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [since]);
+
+  return (
+    <View style={styles.thinking}>
+      <ActivityIndicator color={colors.accent} />
+      <View style={styles.flex}>
+        <Text style={styles.thinkingLabel}>
+          El coach está revisando tus datos… {elapsed}s
+        </Text>
+        {elapsed >= LONG_WAIT_SECONDS ? (
+          <Text style={styles.thinkingHint}>
+            Armar un plan completo puede tardar más de un minuto.
+          </Text>
+        ) : null}
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Cancelar la consulta"
+        onPress={onCancel}
+        style={styles.cancelButton}
+      >
+        <Text style={styles.cancelButtonText}>Cancelar</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
+  flex: { flex: 1 },
+
+  thinking: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    backgroundColor: colors.surfaceContainer,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  thinkingLabel: { ...typography.caption, color: colors.textMuted },
+  thinkingHint: { ...typography.caption, color: colors.textFaint, marginTop: 2 },
+  cancelButton: {
+    minHeight: TOUCH_TARGET,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+  },
+  cancelButtonText: { ...typography.caption, color: colors.accent, fontWeight: "700" },
 
   header: {
     paddingHorizontal: spacing.lg,

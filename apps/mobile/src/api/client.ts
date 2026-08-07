@@ -55,25 +55,66 @@ export const API_BASE_URL = resolveBaseUrl();
 export class ApiError extends Error {
   constructor(
     message: string,
-    readonly kind: "offline" | "server" | "invalid",
+    readonly kind: "offline" | "server" | "invalid" | "timeout",
   ) {
     super(message);
     this.name = "ApiError";
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * Cuánto se espera antes de rendirse, por tipo de petición.
+ *
+ * El chat necesita mucho más margen que el resto: armar un plan completo puede
+ * tomar más de un minuto porque el modelo redacta el análisis y el plan en la
+ * misma respuesta. Sin un límite propio, quien cortaba era el sistema operativo
+ * y el error resultante decía "no se pudo conectar", culpando al backend por
+ * algo que era una espera larga.
+ */
+const TIMEOUT_MS = {
+  chat: 150_000,
+  default: 45_000,
+} as const;
+
+async function request<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number; signal?: AbortSignal },
+): Promise<T> {
+  const { timeoutMs = TIMEOUT_MS.default, signal: callerSignal, ...rest } = init ?? {};
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Si quien llama trae su propio signal (botón de cancelar), cancelar por ahí
+  // también aborta la petición.
+  const onCallerAbort = () => controller.abort();
+  callerSignal?.addEventListener("abort", onCallerAbort);
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
+      ...rest,
+      signal: controller.signal,
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     });
   } catch {
+    // `AbortError` no distingue timeout de cancelación del usuario: el estado
+    // del controller sí, y el mensaje tiene que decir cuál de las dos fue.
+    if (callerSignal?.aborted) {
+      throw new ApiError("Cancelaste la consulta.", "timeout");
+    }
+    if (controller.signal.aborted) {
+      throw new ApiError(
+        `El coach tardó más de ${Math.round(timeoutMs / 1000)} segundos en responder. Vuelve a intentarlo; si pediste un plan completo, pídelo en partes.`,
+        "timeout",
+      );
+    }
     throw new ApiError(
-      `No se pudo conectar con el coach en ${API_BASE_URL}. Revisa que el backend esté corriendo.`,
+      `No se pudo conectar con el coach en ${API_BASE_URL}. Revisa tu conexión.`,
       "offline",
     );
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
   }
 
   if (!response.ok) {
@@ -102,8 +143,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  sendChat: (payload: ChatRequest) =>
-    request<ChatResponse>("/api/chat", { method: "POST", body: JSON.stringify(payload) }),
+  /** @param signal permite cancelar desde la UI mientras el coach piensa. */
+  sendChat: (payload: ChatRequest, signal?: AbortSignal) =>
+    request<ChatResponse>("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: TIMEOUT_MS.chat,
+      signal,
+    }),
 
   getGarminStatus: () => request<GarminStatus>("/api/garmin/status"),
 

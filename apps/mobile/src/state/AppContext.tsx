@@ -76,6 +76,8 @@ interface AppState {
   messages: ChatMessage[];
   garminStatus: GarminStatus;
   sending: boolean;
+  /** Momento en que arrancó la consulta en curso, para mostrar cuánto lleva esperando. */
+  sendingSince: number | undefined;
   chatError: string | undefined;
   /** Notas subjetivas ("cómo me siento"), más reciente al final. */
   wellnessNotes: WellnessNote[];
@@ -83,6 +85,8 @@ interface AppState {
 
 interface AppActions {
   sendMessage: (text: string) => Promise<void>;
+  /** Corta la consulta en curso; el turno del usuario queda en el chat para reintentar. */
+  cancelSending: () => void;
   savePlan: (plan: TrainingPlan) => Promise<void>;
   setActivePlan: (planId: string) => Promise<void>;
   markSession: (sessionId: string, status: SessionStatus) => Promise<void>;
@@ -157,10 +161,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [garminStatus, setGarminStatus] = useState<GarminStatus>(INITIAL_GARMIN_STATUS);
   const [garminStatusLoaded, setGarminStatusLoaded] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendingSince, setSendingSince] = useState<number | undefined>();
   const [chatError, setChatError] = useState<string | undefined>();
   const [wellnessNotes, setWellnessNotes] = useState<WellnessNote[]>([]);
   // Evita dos sincronizaciones concurrentes (montaje + regreso a primer plano casi simultáneos).
   const syncingRef = useRef(false);
+  // Permite cancelar la consulta en curso desde la UI.
+  const sendAbortRef = useRef<AbortController | undefined>(undefined);
 
   // Hidratación inicial desde disco.
   useEffect(() => {
@@ -251,7 +258,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const history = [...messages, userMessage];
       setMessages(history);
       setSending(true);
+      setSendingSince(Date.now());
       setChatError(undefined);
+
+      const controller = new AbortController();
+      sendAbortRef.current = controller;
 
       try {
         const historyCutoff = new Date(Date.now() - TRAINING_HISTORY_WINDOW_DAYS * 86_400_000)
@@ -284,7 +295,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           subjectiveNotes: wellnessNotes.filter(
             (note) => note.date >= new Date(Date.now() - WELLNESS_NOTES_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10),
           ),
-        });
+        }, controller.signal);
 
         setMessages((current) => [...current, response.message]);
         setGarminStatus(response.garminStatus);
@@ -297,10 +308,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         // El turno del usuario se conserva para que pueda reintentar sin reescribir.
       } finally {
         setSending(false);
+        setSendingSince(undefined);
+        sendAbortRef.current = undefined;
       }
     },
     [messages, profile, activePlanId, logs, plans, executions, activities, matches, sending, wellnessNotes],
   );
+
+  /** Corta la consulta en curso. El turno del usuario queda en el chat para reintentar. */
+  const cancelSending = useCallback(() => {
+    sendAbortRef.current?.abort();
+  }, []);
 
   const savePlan = useCallback(async (plan: TrainingPlan) => {
     const saved = await planRepository.save(plan);
@@ -564,9 +582,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       messages,
       garminStatus,
       sending,
+      sendingSince,
       chatError,
       wellnessNotes,
       sendMessage,
+      cancelSending,
       savePlan,
       setActivePlan,
       markSession,
@@ -607,9 +627,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       messages,
       garminStatus,
       sending,
+      sendingSince,
       chatError,
       wellnessNotes,
       sendMessage,
+      cancelSending,
       savePlan,
       setActivePlan,
       markSession,
