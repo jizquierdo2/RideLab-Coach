@@ -11,6 +11,7 @@ import {
   type ChatMessage,
   type ChatRequest,
   type GarminSnapshot,
+  type HistoricalMetricsDay,
   type PerformanceAssessment,
   type PerformanceGuidance,
   type PerformanceSnapshot,
@@ -20,7 +21,7 @@ import { getTrainingHistoryTool, getTrainingRecordTool } from "./training-histor
 import { config } from "../config";
 
 /** Tools de sólo información: el modelo necesita su resultado para seguir, no son terminales. */
-const INFO_TOOL_NAMES = new Set(["get_training_history", "get_training_record"]);
+const INFO_TOOL_NAMES = new Set(["get_training_history", "get_training_record", "get_historical_metrics"]);
 /** Tope de vueltas de tool-calling, para no quedar en loop si el modelo insiste en pedir info. */
 const MAX_TOOL_TURNS = 4;
 
@@ -52,6 +53,11 @@ export class OpenAIAgentGateway implements AgentGateway {
     apiKey: string = config.openai.apiKey,
     private readonly model = config.openai.model,
     client?: OpenAI,
+    /** Resuelve `get_historical_metrics`. `undefined` si el proveedor no lo soporta (la tool no se ofrece). */
+    private readonly historicalMetrics?: (params: {
+      startDate: string;
+      endDate: string;
+    }) => Promise<HistoricalMetricsDay[]>,
   ) {
     if (!apiKey) throw new Error("OPENAI_API_KEY es obligatoria para OpenAIAgentGateway");
     this.client = client ?? new OpenAI({ apiKey });
@@ -71,6 +77,7 @@ export class OpenAIAgentGateway implements AgentGateway {
       { type: "function", function: REPORT_METRICS_TOOL },
       { type: "function", function: GET_TRAINING_HISTORY_TOOL },
       { type: "function", function: GET_TRAINING_RECORD_TOOL },
+      ...(this.historicalMetrics ? [{ type: "function", function: GET_HISTORICAL_METRICS_TOOL } as const] : []),
     ];
 
     let choice: OpenAI.ChatCompletion.Choice | undefined;
@@ -93,7 +100,7 @@ export class OpenAIAgentGateway implements AgentGateway {
         } catch {
           // Argumentos vacíos: la tool resuelve con lo que tenga (sin filtros).
         }
-        const result = this.resolveInfoTool(call.function.name, args, request.trainingHistory);
+        const result = await this.resolveInfoTool(call.function.name, args, request.trainingHistory);
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
     }
@@ -180,6 +187,7 @@ export class OpenAIAgentGateway implements AgentGateway {
   async generateGuidance(
     assessment: PerformanceAssessment,
     snapshot: PerformanceSnapshot,
+    subjectiveNote?: string,
   ): Promise<PerformanceGuidance> {
     try {
       const completion = await this.client.chat.completions.create({
@@ -187,7 +195,7 @@ export class OpenAIAgentGateway implements AgentGateway {
         messages: [
           { role: "system", content: COACH_BASE_INSTRUCTIONS },
           { role: "system", content: PERFORMANCE_GUIDANCE_INSTRUCTIONS },
-          { role: "user", content: this.buildGuidanceContext(assessment, snapshot) },
+          { role: "user", content: this.buildGuidanceContext(assessment, snapshot, subjectiveNote) },
         ],
         tools: [{ type: "function", function: REPORT_PERFORMANCE_GUIDANCE_TOOL }],
         tool_choice: { type: "function", function: { name: "report_performance_guidance" } },
@@ -205,7 +213,11 @@ export class OpenAIAgentGateway implements AgentGateway {
     return fallbackGuidance(assessment);
   }
 
-  private buildGuidanceContext(assessment: PerformanceAssessment, snapshot: PerformanceSnapshot): string {
+  private buildGuidanceContext(
+    assessment: PerformanceAssessment,
+    snapshot: PerformanceSnapshot,
+    subjectiveNote?: string,
+  ): string {
     return [
       `Assessment ya calculado (no lo cuestiones ni lo cambies, sólo redacta sobre él): ${JSON.stringify(assessment)}`,
       `Métricas disponibles que respaldan el assessment: ${JSON.stringify({
@@ -220,6 +232,9 @@ export class OpenAIAgentGateway implements AgentGateway {
         ? `Métricas NO disponibles, no las menciones como si existieran: ${snapshot.missingMetrics.join(", ")}`
         : "",
       snapshot.source === "mock" ? "IMPORTANTE: son datos de demostración, no reales." : "",
+      subjectiveNote
+        ? `Nota subjetiva del atleta hoy (auto-reportada, NO es una métrica de Garmin — puede matizar el mensaje pero nunca contradecir el nivel ya calculado): "${subjectiveNote}"`
+        : "",
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -240,11 +255,17 @@ export class OpenAIAgentGateway implements AgentGateway {
   }
 
   /**
-   * Resuelve una tool de información sin I/O: sólo filtra/recorta el
-   * `trainingHistory` que ya llegó en la petición. Nunca se inyecta de
-   * antemano en el prompt — sólo llega al modelo si la pide explícitamente.
+   * Resuelve una tool de información. `get_training_history`/`get_training_record`
+   * son puras (sólo filtran el `trainingHistory` que ya llegó en la petición);
+   * `get_historical_metrics` sí hace I/O real contra Garmin, por eso el método
+   * es async. Ninguna se inyecta de antemano en el prompt — sólo llegan al
+   * modelo si las pide explícitamente.
    */
-  private resolveInfoTool(name: string, args: unknown, trainingHistory: ChatRequest["trainingHistory"]): unknown {
+  private async resolveInfoTool(
+    name: string,
+    args: unknown,
+    trainingHistory: ChatRequest["trainingHistory"],
+  ): Promise<unknown> {
     if (name === "get_training_history") {
       const parsed = args as { startDate?: string; endDate?: string; includeGarminMetrics?: boolean };
       return getTrainingHistoryTool(trainingHistory, parsed);
@@ -252,6 +273,16 @@ export class OpenAIAgentGateway implements AgentGateway {
     if (name === "get_training_record") {
       const parsed = args as { sessionId: string };
       return getTrainingRecordTool(trainingHistory, parsed);
+    }
+    if (name === "get_historical_metrics") {
+      const parsed = args as { startDate?: string; endDate?: string };
+      if (!this.historicalMetrics || !parsed.startDate || !parsed.endDate) return [];
+      try {
+        return await this.historicalMetrics({ startDate: parsed.startDate, endDate: parsed.endDate });
+      } catch (error) {
+        console.warn("[openai] get_historical_metrics falló:", error instanceof Error ? error.message : error);
+        return [];
+      }
     }
     return null;
   }
@@ -273,6 +304,14 @@ export class OpenAIAgentGateway implements AgentGateway {
           trainingReadiness: snapshot.trainingReadiness,
           trainingStatus: snapshot.trainingStatus,
           vo2max: snapshot.vo2max,
+          fitnessAge: snapshot.fitnessAge,
+          dailyActivity: snapshot.dailyActivity,
+          respiration: snapshot.respiration,
+          spo2: snapshot.spo2,
+          hillScore: snapshot.hillScore,
+          enduranceScore: snapshot.enduranceScore,
+          cyclingFtpWatts: snapshot.cyclingFtpWatts,
+          lactateThresholdBpm: snapshot.lactateThresholdBpm,
           recentActivities: snapshot.recentActivities,
           weeklyTrends: snapshot.weeklyTrends,
         },
@@ -287,6 +326,11 @@ export class OpenAIAgentGateway implements AgentGateway {
         : "",
       profile ? `Perfil del atleta ya conocido (no vuelvas a preguntar esto): ${JSON.stringify(profile)}` : "",
       logs.length ? `Sesiones registradas recientemente: ${JSON.stringify(logs)}` : "El usuario aún no registra sesiones.",
+      request.subjectiveNotes.length
+        ? `Notas subjetivas recientes del atleta (auto-reportadas, NO son métricas de Garmin — úsalas como contexto cualitativo, nunca las confundas con datos medidos): ${JSON.stringify(
+            request.subjectiveNotes.map((n) => ({ date: n.date, note: n.note })),
+          )}`
+        : "",
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -486,6 +530,27 @@ const GET_TRAINING_RECORD_TOOL = {
     required: ["sessionId"],
     properties: {
       sessionId: { type: "string", description: "Id de la sesión planificada" },
+    },
+  },
+} as const;
+
+/**
+ * Schema JSON de `get_historical_metrics`: tool de INFORMACIÓN sobre un día u
+ * rango puntual de métricas Garmin (sueño, HRV, Training Readiness, estrés) —
+ * a diferencia del snapshot de "hoy" que ya viene en el contexto. Sólo se
+ * ofrece cuando el backend tiene un proveedor Garmin real conectado.
+ */
+const GET_HISTORICAL_METRICS_TOOL = {
+  name: "get_historical_metrics",
+  description:
+    "Devuelve un resumen diario (puntaje de sueño, HRV, Training Readiness, estrés promedio) para cada día del rango pedido. Úsala cuando te pregunten por un día específico que no sea hoy (ej. \"antes de ayer\", \"el lunes pasado\") o por una tendencia de varios días — el snapshot de contexto sólo trae el día de hoy.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    required: ["startDate", "endDate"],
+    properties: {
+      startDate: { type: "string", description: "YYYY-MM-DD, inicio del rango (inclusive)" },
+      endDate: { type: "string", description: "YYYY-MM-DD, fin del rango (inclusive)" },
     },
   },
 } as const;

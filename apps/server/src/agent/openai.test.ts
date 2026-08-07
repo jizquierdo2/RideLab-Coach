@@ -6,7 +6,7 @@ import { OpenAIAgentGateway } from "./openai";
 const snapshot = buildDemoSnapshot(new Date("2026-08-05T12:00:00.000Z"));
 
 function request(trainingHistory: ChatRequest["trainingHistory"] = [], content = "¿Cumplí mi plan esta semana?"): ChatRequest {
-  return { messages: [{ role: "user", content }], recentLogs: [], trainingHistory };
+  return { messages: [{ role: "user", content }], recentLogs: [], trainingHistory, subjectiveNotes: [] };
 }
 
 /** Cliente falso: nunca pega a la red real, el test controla cada respuesta. */
@@ -118,6 +118,58 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
     const toolMessage = secondCallMessages.find((m) => m.role === "tool");
     const toolResult = JSON.parse(toolMessage!.content);
     expect(toolResult.actualRpe).toBe(7);
+  });
+
+  it("resuelve get_historical_metrics contra el proveedor inyectado cuando el modelo pregunta por un día que no es hoy", async () => {
+    const historicalMetrics = vi.fn().mockResolvedValue([
+      { date: "2026-08-03", sleepScore: 81, sleepDurationMinutes: 432, trainingReadinessScore: 70 },
+    ]);
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "get_historical_metrics",
+                    arguments: JSON.stringify({ startDate: "2026-08-03", endDate: "2026-08-03" }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { role: "assistant", content: "Dormiste 7h12m, puntaje 81.", tool_calls: [] } }],
+      });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create), historicalMetrics);
+    const message = await gateway.reply(request([], "¿Cómo dormí antes de ayer?"), snapshot);
+
+    expect(historicalMetrics).toHaveBeenCalledWith({ startDate: "2026-08-03", endDate: "2026-08-03" });
+    const secondCallMessages = create.mock.calls[1][0].messages as Array<{ role: string; content: string }>;
+    const toolMessage = secondCallMessages.find((m) => m.role === "tool");
+    expect(JSON.parse(toolMessage!.content)[0].sleepScore).toBe(81);
+    expect(message.content).toBe("Dormiste 7h12m, puntaje 81.");
+  });
+
+  it("no ofrece get_historical_metrics cuando no se inyecta un resolver (modo mock/endpoint remoto)", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: "assistant", content: "Sin datos.", tool_calls: [] } }],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    await gateway.reply(request(), snapshot);
+
+    const offeredTools = create.mock.calls[0][0].tools as Array<{ function: { name: string } }>;
+    expect(offeredTools.map((t) => t.function.name)).not.toContain("get_historical_metrics");
   });
 
   it("no entra en loop infinito: se detiene en MAX_TOOL_TURNS aunque el modelo insista", async () => {

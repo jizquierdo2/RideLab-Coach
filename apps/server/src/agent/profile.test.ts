@@ -7,6 +7,7 @@ function conversation(...userTurns: string[]): ChatRequest {
     messages: userTurns.map((content) => ({ role: "user" as const, content })),
     recentLogs: [],
     trainingHistory: [],
+    subjectiveNotes: [],
   };
 }
 
@@ -74,6 +75,7 @@ describe("resolveAthleteProfile", () => {
       messages: [{ role: "user", content: "Créame un plan" }],
       recentLogs: [],
       trainingHistory: [],
+      subjectiveNotes: [],
       athleteProfile: {
         goals: ["Ganar fuerza"],
         daysPerWeek: 4,

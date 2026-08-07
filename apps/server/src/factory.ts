@@ -21,10 +21,22 @@ export function createGarminProvider(): GarminDataProvider {
   return new McpGarminDataProvider();
 }
 
-export function createAgentGateway(): AgentGateway {
+/**
+ * @param resolveHistoricalMetrics le da a `OpenAIAgentGateway` acceso a la
+ * tool `get_historical_metrics`. Se recibe como función (no como el proveedor
+ * ya resuelto) para que, si el caller reemplaza su `GarminDataProvider` en
+ * caliente (un login exitoso desde la app), el gateway siga apuntando al
+ * proveedor vigente en vez de quedar con el de arranque.
+ */
+export function createAgentGateway(
+  resolveHistoricalMetrics: GarminDataProvider["getHistoricalMetrics"] = (params) =>
+    createGarminProvider().getHistoricalMetrics(params),
+): AgentGateway {
   if (config.mockMode) return new MockAgentGateway();
   if (config.agentEndpoint) return new RemoteAgentGateway();
-  if (config.openai.apiKey) return new OpenAIAgentGateway();
+  if (config.openai.apiKey) {
+    return new OpenAIAgentGateway(undefined, undefined, undefined, resolveHistoricalMetrics);
+  }
   return new MockAgentGateway();
 }
 
@@ -38,7 +50,7 @@ export interface RuntimeInfo {
 
 export function describeRuntime(
   provider: GarminDataProvider = createGarminProvider(),
-  gateway: AgentGateway = createAgentGateway(),
+  gateway: AgentGateway = createAgentGateway((params) => provider.getHistoricalMetrics(params)),
 ): RuntimeInfo {
   return {
     mockMode: config.mockMode,

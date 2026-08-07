@@ -28,8 +28,15 @@ export interface AgentGateway {
    * Mensaje breve del coach para la sección Estado, a partir de un
    * `PerformanceAssessment` ya calculado — el agente nunca decide el nivel,
    * sólo redacta sobre lo que el motor determinístico ya resolvió.
+   *
+   * @param subjectiveNote nota subjetiva del día ("cómo me siento"), si el
+   * atleta la registró — contexto adicional, nunca cambia el nivel calculado.
    */
-  generateGuidance(assessment: PerformanceAssessment, snapshot: PerformanceSnapshot): Promise<PerformanceGuidance>;
+  generateGuidance(
+    assessment: PerformanceAssessment,
+    snapshot: PerformanceSnapshot,
+    subjectiveNote?: string,
+  ): Promise<PerformanceGuidance>;
 }
 
 export function newMessageId(): string {

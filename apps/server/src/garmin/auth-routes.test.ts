@@ -31,6 +31,10 @@ class FakeConnectableProvider implements ConnectableGarminProvider {
     throw new Error("no usado en estos tests");
   }
 
+  async getHistoricalMetrics(): Promise<never> {
+    throw new Error("no usado en estos tests");
+  }
+
   async verifyLogin() {
     return this.loginResult;
   }

@@ -15,7 +15,7 @@ const PLAN_QUESTIONS =
   "Para armarte un plan seguro necesito sólo esto:\n\n1. ¿De cuánto tiempo dispones por sesión?";
 
 function conversation(messages: ChatRequest["messages"], recentLogs: ChatRequest["recentLogs"] = []): ChatRequest {
-  return { messages, recentLogs, trainingHistory: [] };
+  return { messages, recentLogs, trainingHistory: [], subjectiveNotes: [] };
 }
 
 describe("negación de dolor", () => {

@@ -33,7 +33,9 @@ seedGarminTokenCacheFromEnv();
 // `let`, no `const`: un login exitoso desde la app reemplaza este proveedor
 // en caliente, sin reiniciar el backend.
 let garminProvider: GarminDataProvider = createGarminProvider();
-const agentGateway = createAgentGateway();
+// Resolver indirecto (no `garminProvider.getHistoricalMetrics` directo): así
+// sigue al proveedor vigente si `setProvider` lo reemplaza tras un login.
+const agentGateway = createAgentGateway((params) => garminProvider.getHistoricalMetrics(params));
 
 registerGarminAuthRoutes(app, {
   envFilePath: path.resolve(process.cwd(), ".env"),
@@ -101,11 +103,12 @@ app.get("/api/garmin/activities", async (req, res) => {
  * el agente falla al redactar, `generateGuidance` ya resuelve con su propio
  * fallback determinístico internamente, así que nunca llega vacío hasta acá.
  */
-app.get("/api/garmin/performance", async (_req, res) => {
+app.get("/api/garmin/performance", async (req, res) => {
   try {
+    const subjectiveNote = typeof req.query.note === "string" ? req.query.note.slice(0, 500) : undefined;
     const snapshot = await garminProvider.getPerformanceSnapshot();
     const assessment = assessPerformance(snapshot);
-    const guidance = await agentGateway.generateGuidance(assessment, snapshot);
+    const guidance = await agentGateway.generateGuidance(assessment, snapshot, subjectiveNote);
     res.json({ snapshot, assessment, guidance });
   } catch (error) {
     console.error("[performance] error:", error);

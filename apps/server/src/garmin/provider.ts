@@ -1,4 +1,4 @@
-import type { GarminActivity, GarminSnapshot, PerformanceSnapshot } from "@ridelab/shared";
+import type { GarminActivity, GarminSnapshot, HistoricalMetricsDay, PerformanceSnapshot } from "@ridelab/shared";
 
 /**
  * Contrato para obtener métricas de Garmin.
@@ -25,6 +25,13 @@ export interface GarminDataProvider {
 
   /** Snapshot de rendimiento para la sección Estado — deriva de `getSnapshot()`. */
   getPerformanceSnapshot(): Promise<PerformanceSnapshot>;
+
+  /**
+   * Resumen diario compacto (sueño, HRV, readiness, estrés) para un rango de
+   * fechas, para responder preguntas sobre un día puntual o un periodo — nunca
+   * las lecturas crudas de alta frecuencia.
+   */
+  getHistoricalMetrics(params: { startDate: string; endDate: string }): Promise<HistoricalMetricsDay[]>;
 }
 
 /**
@@ -54,6 +61,18 @@ export const GARMIN_READ_ONLY_TOOLS = [
   "get_hrv_range",
   "get_stress_range",
   "get_daily_steps_range",
+  // Métricas de rendimiento de ciclismo/MTB y recuperación adicionales,
+  // agregadas para que el coach tenga el contexto completo que ofrece el MCP.
+  "get_hill_score",
+  "get_endurance_score",
+  "get_cycling_ftp",
+  "get_lactate_threshold",
+  "get_respiration",
+  "get_spo2",
+  "get_training_readiness_range",
+  "get_vo2max_range",
+  "get_spo2_range",
+  "get_respiration_range",
 ] as const;
 
 export type GarminReadOnlyTool = (typeof GARMIN_READ_ONLY_TOOLS)[number];

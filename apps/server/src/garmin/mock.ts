@@ -1,9 +1,11 @@
 import {
+  buildDemoHistoricalMetrics,
   buildDemoPerformanceSnapshotSolid,
   buildDemoSnapshot,
   buildDemoTrainingHistory,
   type GarminActivity,
   type GarminSnapshot,
+  type HistoricalMetricsDay,
   type PerformanceSnapshot,
 } from "@ridelab/shared";
 import type { GarminDataProvider } from "./provider";
@@ -41,5 +43,15 @@ export class MockGarminDataProvider implements GarminDataProvider {
 
   async getPerformanceSnapshot(): Promise<PerformanceSnapshot> {
     return buildDemoPerformanceSnapshotSolid();
+  }
+
+  async getHistoricalMetrics({
+    startDate,
+    endDate,
+  }: {
+    startDate: string;
+    endDate: string;
+  }): Promise<HistoricalMetricsDay[]> {
+    return buildDemoHistoricalMetrics(startDate, endDate);
   }
 }

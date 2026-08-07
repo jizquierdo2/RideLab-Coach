@@ -13,7 +13,7 @@ const gateway = new MockAgentGateway();
 const snapshot = buildDemoSnapshot(new Date("2026-08-04T12:00:00.000Z"));
 
 function ask(content: string, extra: Partial<ChatRequest> = {}): ChatRequest {
-  return { messages: [{ role: "user", content }], recentLogs: [], trainingHistory: [], ...extra };
+  return { messages: [{ role: "user", content }], recentLogs: [], trainingHistory: [], subjectiveNotes: [], ...extra };
 }
 
 /** Perfil completo: con esto el coach ya no debe preguntar nada más. */

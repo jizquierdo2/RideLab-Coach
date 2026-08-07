@@ -4,6 +4,7 @@ import {
   mapGarminSnapshotToPerformanceSnapshot,
   type GarminActivity,
   type GarminSnapshot,
+  type HistoricalMetricsDay,
   type PerformanceSnapshot,
 } from "@ridelab/shared";
 import { assertReadOnlyTool, GARMIN_READ_ONLY_TOOLS, type GarminDataProvider } from "./provider";
@@ -167,22 +168,49 @@ export class McpGarminDataProvider implements GarminDataProvider {
     const today = new Date().toISOString().slice(0, 10);
     const from = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 
-    const [sleep, hrv, readiness, status, bodyBattery, stress, vo2max, activities] =
-      await Promise.all([
-        this.callTool<Record<string, unknown>>("get_sleep_data", { date: today }),
-        this.callTool<Record<string, unknown>>("get_hrv", { date: today }),
-        this.callTool<Record<string, unknown>>("get_training_readiness", { date: today }),
-        this.callTool<Record<string, unknown>>("get_training_status", { date: today }),
-        // Esta tool pide startDate/endDate, no date — a diferencia de casi
-        // todas las demás. Verificado contra el servidor real.
-        this.callTool<Array<Record<string, unknown>>>("get_body_battery", {
-          startDate: today,
-          endDate: today,
-        }),
-        this.callTool<Record<string, unknown>>("get_stress", { date: today }),
-        this.callTool<Record<string, unknown>>("get_vo2max", {}),
-        this.callTool<Array<Record<string, unknown>>>("get_activities", { limit: 5 }),
-      ]);
+    const [
+      sleep,
+      hrv,
+      readiness,
+      status,
+      bodyBattery,
+      stress,
+      vo2max,
+      activities,
+      restingHr,
+      dailySummary,
+      fitnessAge,
+      hillScore,
+      enduranceScore,
+      cyclingFtp,
+      lactateThreshold,
+      respiration,
+      spo2,
+    ] = await Promise.all([
+      this.callTool<Record<string, unknown>>("get_sleep_data", { date: today }),
+      this.callTool<Record<string, unknown>>("get_hrv", { date: today }),
+      this.callTool<Record<string, unknown>>("get_training_readiness", { date: today }),
+      this.callTool<Record<string, unknown>>("get_training_status", { date: today }),
+      // Esta tool pide startDate/endDate, no date — a diferencia de casi
+      // todas las demás. Verificado contra el servidor real.
+      this.callTool<Array<Record<string, unknown>>>("get_body_battery", {
+        startDate: today,
+        endDate: today,
+      }),
+      this.callTool<Record<string, unknown>>("get_stress", { date: today }),
+      this.callTool<Record<string, unknown>>("get_vo2max", {}),
+      this.callTool<Array<Record<string, unknown>>>("get_activities", { limit: 5 }),
+      this.callTool<Record<string, unknown>>("get_resting_heart_rate", { date: today }),
+      this.callTool<Record<string, unknown>>("get_daily_summary", { date: today }),
+      this.callTool<Record<string, unknown>>("get_fitness_age", { date: today }),
+      // Single-day mode: sólo `startDate`, sin `endDate`. Verificado contra la cuenta real.
+      this.callTool<Record<string, unknown>>("get_hill_score", { startDate: today }),
+      this.callTool<Record<string, unknown>>("get_endurance_score", { startDate: today }),
+      this.callTool<Record<string, unknown>>("get_cycling_ftp", {}),
+      this.callTool<Array<Record<string, unknown>>>("get_lactate_threshold", {}),
+      this.callTool<Record<string, unknown>>("get_respiration", { date: today }),
+      this.callTool<Record<string, unknown>>("get_spo2", { date: today }),
+    ]);
 
     const unavailableMetrics: string[] = [];
     const track = (value: unknown, label: string) => {
@@ -198,6 +226,15 @@ export class McpGarminDataProvider implements GarminDataProvider {
     track(stress, "Estrés");
     track(vo2max, "VO₂ Max");
     track(activities, "Actividades recientes");
+    track(restingHr, "FC en reposo");
+    track(dailySummary, "Resumen diario (pasos, pisos, minutos de intensidad)");
+    track(fitnessAge, "Edad de fitness");
+    track(hillScore, "Hill Score");
+    track(enduranceScore, "Endurance Score");
+    track(cyclingFtp, "FTP de ciclismo");
+    track(lactateThreshold, "Umbral de lactato");
+    track(respiration, "Respiración");
+    track(spo2, "SpO2");
 
     const first = <T>(value: unknown): T | undefined =>
       Array.isArray(value) ? (value[0] as T | undefined) : (value as T | undefined);
@@ -247,6 +284,19 @@ export class McpGarminDataProvider implements GarminDataProvider {
     ) ?? {};
     const trainingStatusRow = Object.values(latestByDevice)[0];
     const acuteLoadDto = trainingStatusRow?.acuteTrainingLoadDTO as Record<string, unknown> | undefined;
+
+    // get_resting_heart_rate: el valor real vive bajo allMetrics.metricsMap,
+    // no en la raíz — verificado contra la cuenta real.
+    const restingHrMap = (restingHr?.allMetrics as Record<string, unknown> | undefined)?.metricsMap as
+      | Record<string, Array<Record<string, unknown>>>
+      | undefined;
+    const restingHrValue = num(restingHrMap?.WELLNESS_RESTING_HEART_RATE?.[0]?.value);
+
+    // get_lactate_threshold: array con una fila por métrica (pace / HR); se
+    // toma la fila que trae `hearRate` (sic, así lo nombra la API real).
+    const lactateHrRow = Array.isArray(lactateThreshold)
+      ? lactateThreshold.find((row) => typeof row.hearRate === "number")
+      : undefined;
 
     return {
       dataSource: "garmin-mcp",
@@ -323,6 +373,38 @@ export class McpGarminDataProvider implements GarminDataProvider {
           }
         : undefined,
       vo2max: num(first<Record<string, unknown>>(vo2max)?.vo2MaxValue),
+      restingHeartRate: restingHrValue,
+      fitnessAge: num(fitnessAge?.fitnessAge),
+      dailyActivity: dailySummary
+        ? {
+            date: today,
+            steps: num(dailySummary.totalSteps),
+            stepGoal: num(dailySummary.dailyStepGoal),
+            floorsAscended: num(dailySummary.floorsAscended),
+            intensityMinutesModerate: num(dailySummary.moderateIntensityMinutes),
+            intensityMinutesVigorous: num(dailySummary.vigorousIntensityMinutes),
+            intensityMinutesGoal: num(dailySummary.intensityMinutesGoal),
+          }
+        : undefined,
+      respiration: respiration
+        ? {
+            date: today,
+            avgBreathsPerMinute: num(respiration.avgWakingRespirationValue),
+            lowestBreathsPerMinute: num(respiration.lowestRespirationValue),
+            highestBreathsPerMinute: num(respiration.highestRespirationValue),
+          }
+        : undefined,
+      spo2: spo2
+        ? {
+            date: today,
+            averagePercent: num(spo2.averageSpO2),
+            lowestPercent: num(spo2.lowestSpO2),
+          }
+        : undefined,
+      hillScore: num(hillScore?.overallScore),
+      enduranceScore: num(enduranceScore?.overallScore),
+      cyclingFtpWatts: num(cyclingFtp?.functionalThresholdPower),
+      lactateThresholdBpm: num(lactateHrRow?.hearRate),
       recentActivities: Array.isArray(activities)
         ? activities.slice(0, 5).map((activity, index) => ({
             id: String(activity.activityId ?? `mcp-${index}`),
@@ -395,6 +477,84 @@ export class McpGarminDataProvider implements GarminDataProvider {
   async getPerformanceSnapshot(): Promise<PerformanceSnapshot> {
     const snapshot = await this.getSnapshot();
     return mapGarminSnapshotToPerformanceSnapshot(snapshot);
+  }
+
+  /**
+   * Resumen diario compacto para un rango de fechas, para que el coach pueda
+   * responder preguntas sobre un día puntual ("¿cómo dormí antes de ayer?") o
+   * un periodo, sin cargar las lecturas crudas de alta frecuencia (HRV cada 5
+   * minutos, etc.) que traen los `*_range` del MCP.
+   */
+  async getHistoricalMetrics({
+    startDate,
+    endDate,
+  }: {
+    startDate: string;
+    endDate: string;
+  }): Promise<HistoricalMetricsDay[]> {
+    const [sleepRange, hrvRange, readinessRange, stressRange] = await Promise.all([
+      this.callTool<Array<{ date: string; data: Record<string, unknown> }>>("get_sleep_data_range", {
+        startDate,
+        endDate,
+      }),
+      this.callTool<Array<{ date: string; data: Record<string, unknown> }>>("get_hrv_range", {
+        startDate,
+        endDate,
+      }),
+      this.callTool<Array<{ date: string; data: Array<Record<string, unknown>> }>>(
+        "get_training_readiness_range",
+        { startDate, endDate },
+      ),
+      this.callTool<Array<{ date: string; data: Record<string, unknown> }>>("get_stress_range", {
+        startDate,
+        endDate,
+      }),
+    ]);
+
+    const num = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+    const byDate = new Map<string, HistoricalMetricsDay>();
+    const dayFor = (date: string): HistoricalMetricsDay => {
+      const existing = byDate.get(date);
+      if (existing) return existing;
+      const created: HistoricalMetricsDay = { date };
+      byDate.set(date, created);
+      return created;
+    };
+
+    for (const entry of sleepRange ?? []) {
+      const dailySleep = entry.data?.dailySleepDTO as Record<string, unknown> | undefined;
+      if (!dailySleep) continue;
+      const sleepScores = dailySleep.sleepScores as Record<string, unknown> | undefined;
+      const overall = sleepScores?.overall as Record<string, unknown> | undefined;
+      const day = dayFor(entry.date);
+      day.sleepScore = num(overall?.value);
+      day.sleepDurationMinutes = num(dailySleep.sleepTimeSeconds)
+        ? Math.round((dailySleep.sleepTimeSeconds as number) / 60)
+        : undefined;
+    }
+
+    for (const entry of hrvRange ?? []) {
+      const hrvSummary = entry.data?.hrvSummary as Record<string, unknown> | undefined;
+      if (!hrvSummary) continue;
+      const day = dayFor(entry.date);
+      day.hrvOvernightAvgMs = num(hrvSummary.lastNightAvg);
+      day.hrvStatus = typeof hrvSummary.status === "string" ? hrvSummary.status.toLowerCase() : undefined;
+    }
+
+    for (const entry of readinessRange ?? []) {
+      const row = entry.data?.[0];
+      if (!row) continue;
+      dayFor(entry.date).trainingReadinessScore = num(row.score);
+    }
+
+    for (const entry of stressRange ?? []) {
+      if (!entry.data) continue;
+      dayFor(entry.date).stressAvgLevel = num(entry.data.avgStressLevel);
+    }
+
+    return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
   }
 
   /** Herramientas que este proveedor tiene permitido usar. */
