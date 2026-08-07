@@ -1,22 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, useRouter, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+  DEMO_NOTICE,
   findExercise,
   formatSantiagoDayLabel,
-  needsPainEscalation,
-  PAIN_ESCALATION_MESSAGE,
   VIDEO_PENDING_LABEL,
   type ExerciseLog,
   type SessionLog,
   type TrainingExercise,
 } from "@ridelab/shared";
 import { useApp } from "../../src/state/AppContext";
-import { Badge, Button, Card, EmptyState, Loading, Notice, SectionHeader } from "../../src/components/ui";
+import { KeyboardAwareScreen } from "../../src/components/keyboard";
+import { SessionLogForm, type SessionLogValues } from "../../src/components/session-log-form";
+import { Badge, Button, EmptyState, Loading, Notice, SectionHeader } from "../../src/components/ui";
 import { Icon, type IconRole } from "../../src/components/icon";
 import { repeatedFromLabel } from "../../src/lib/calendar";
-import { countExercises, findSession, recoveryAdvice } from "../../src/lib/plan";
+import { adjustLoadsFromLastLog, midpointPercent } from "../../src/lib/loads";
+import { assessmentTone, countExercises, findSession } from "../../src/lib/plan";
 import { colors, featureCardToneColor, radius, spacing, TOUCH_TARGET, typography } from "../../src/theme";
 
 /** Detalle de sesión: bloques, ejercicios, ajuste por recuperación y registro. */
@@ -38,7 +40,7 @@ export default function SessionScreen() {
     finishSessionExecution,
     pendingLoadsPrefillExecutionId,
     clearLoadsPrefill,
-    garminStatus,
+    performanceResponse,
   } = useApp();
 
   const found = useMemo(
@@ -72,10 +74,6 @@ export default function SessionScreen() {
   const [loads, setLoads] = useState<Record<string, string>>({});
   const [reps, setReps] = useState<Record<string, string>>({});
   const [showLogForm, setShowLogForm] = useState(false);
-  const [sessionRpe, setSessionRpe] = useState<number | undefined>();
-  const [duration, setDuration] = useState("");
-  const [painLevel, setPainLevel] = useState(0);
-  const [comment, setComment] = useState("");
   const [saveError, setSaveError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
   const [adjustmentApplied, setAdjustmentApplied] = useState(false);
@@ -109,16 +107,46 @@ export default function SessionScreen() {
     clearLoadsPrefill();
   }, [execution, pendingLoadsPrefillExecutionId, lastLog, clearLoadsPrefill]);
 
-  const advice = useMemo(
-    () =>
-      recoveryAdvice(
-        garminStatus.status === "disconnected" ? undefined : DEMO_READINESS_SCORE,
-        ["Training Readiness", "sueño de anoche", "tiempo de recuperación"],
-      ),
-    [garminStatus.status],
+  // El mismo assessment que muestra la pestaña Estado. No hay un segundo motor
+  // acá: si no se ha consultado el estado de hoy, no se inventa un veredicto.
+  const assessment = performanceResponse?.assessment;
+  const isDemoData = performanceResponse?.snapshot.source === "mock";
+
+  const adjustmentPercent = useMemo(
+    () => (assessment ? midpointPercent(assessment.suggestedLoadAdjustmentPercent) : undefined),
+    [assessment],
   );
 
-  const handleFinish = useCallback(async () => {
+  /** Cargas que el ajuste sugerido podría cambiar. Vacío = el botón no tiene nada que aplicar. */
+  const adjustable = useMemo(() => {
+    if (adjustmentPercent === undefined || !lastLog) return { loads: {}, adjustedCount: 0 };
+    return adjustLoadsFromLastLog(lastLog.exercises, adjustmentPercent);
+  }, [adjustmentPercent, lastLog]);
+
+  const handleApplyAdjustment = useCallback(() => {
+    setLoads((current) => ({ ...current, ...adjustable.loads }));
+    setShowLogForm(true);
+    setAdjustmentApplied(true);
+  }, [adjustable.loads]);
+
+  /** Omitir descarta la sesión del plan, así que se pregunta antes en vez de hacerlo al primer toque. */
+  const confirmSkip = useCallback(() => {
+    if (!id) return;
+    Alert.alert(
+      "¿Omitir esta sesión?",
+      "Quedará marcada como omitida en tu plan. Puedes volver a abrirla cuando quieras.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Omitir",
+          style: "destructive",
+          onPress: () => void markSession(id, "skipped").then(() => router.back()),
+        },
+      ],
+    );
+  }, [id, markSession, router]);
+
+  const handleFinish = useCallback(async (values: SessionLogValues) => {
     if (!found || !activePlan) return;
     setSaving(true);
     setSaveError(undefined);
@@ -141,19 +169,19 @@ export default function SessionScreen() {
       sessionTitle: found.session.title,
       weekNumber: found.week.number,
       completedAt: new Date().toISOString(),
-      actualDurationMinutes: duration ? Number(duration) : undefined,
-      sessionRpe,
-      pain: painLevel > 0 ? { level: painLevel } : undefined,
-      comment: comment.trim() || undefined,
+      actualDurationMinutes: values.durationMinutes,
+      sessionRpe: values.sessionRpe,
+      pain: values.painLevel > 0 ? { level: values.painLevel } : undefined,
+      comment: values.comment,
       exercises,
     };
 
     try {
       await saveLog(log);
       await finishSessionExecution(found.session.id, {
-        actualRpe: sessionRpe,
-        painLevel: painLevel > 0 ? painLevel : undefined,
-        notes: comment.trim() || undefined,
+        actualRpe: values.sessionRpe,
+        painLevel: values.painLevel > 0 ? values.painLevel : undefined,
+        notes: values.comment,
       });
       router.back();
     } catch (error) {
@@ -161,20 +189,7 @@ export default function SessionScreen() {
     } finally {
       setSaving(false);
     }
-  }, [
-    found,
-    activePlan,
-    completed,
-    loads,
-    reps,
-    duration,
-    sessionRpe,
-    painLevel,
-    comment,
-    saveLog,
-    finishSessionExecution,
-    router,
-  ]);
+  }, [found, activePlan, completed, loads, reps, saveLog, finishSessionExecution, router]);
 
   if (!ready) return <Loading />;
 
@@ -195,7 +210,7 @@ export default function SessionScreen() {
   const doneCount = Object.values(completed).filter(Boolean).length;
 
   return (
-    <>
+    <KeyboardAwareScreen>
       <Stack.Screen options={{ title: session.dayLabel }} />
       <ScrollView
         style={styles.container}
@@ -261,38 +276,62 @@ export default function SessionScreen() {
           />
         ) : null}
 
-        {advice ? (
+        {assessment ? (
           <View style={styles.adviceCard}>
             <View style={styles.adviceHeadRow}>
-              <Icon role={adviceIcon(advice.tone)} size={20} color={featureCardToneColor[advice.tone]} />
+              <Icon
+                role={adviceIcon(assessmentTone(assessment.level))}
+                size={20}
+                color={featureCardToneColor[assessmentTone(assessment.level)]}
+              />
               <View style={styles.flex}>
                 <Text style={styles.adviceLabel}>Tu recuperación de hoy</Text>
-                <Text style={[styles.adviceTitle, { color: featureCardToneColor[advice.tone] }]}>
-                  {advice.title}
+                <Text
+                  style={[styles.adviceTitle, { color: featureCardToneColor[assessmentTone(assessment.level)] }]}
+                >
+                  {assessment.label}
                 </Text>
               </View>
             </View>
-            <Text style={styles.adviceDetail}>{advice.detail}</Text>
-            {garminStatus.status === "demo" ? (
-              <Text style={styles.adviceDemo}>{garminStatus.message}</Text>
-            ) : null}
-            <Pressable
-              accessibilityRole="button"
-              disabled={adjustmentApplied}
-              onPress={() => setAdjustmentApplied(true)}
-              style={[styles.adviceButton, adjustmentApplied && styles.adviceButtonDisabled]}
-            >
-              <Text style={styles.adviceButtonText}>
-                {adjustmentApplied ? "Ajuste aplicado" : "Aplicar ajuste sugerido"}
+            <Text style={styles.adviceDetail}>{assessment.recommendation}</Text>
+            {isDemoData ? <Text style={styles.adviceDemo}>{DEMO_NOTICE}</Text> : null}
+
+            {/* El botón sólo aparece si de verdad hay cargas previas que escalar:
+                un control que promete una acción tiene que poder cumplirla. */}
+            {adjustable.adjustedCount > 0 && adjustmentPercent !== undefined ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={adjustmentApplied}
+                onPress={handleApplyAdjustment}
+                style={[styles.adviceButton, adjustmentApplied && styles.adviceButtonDisabled]}
+              >
+                <Text style={styles.adviceButtonText}>
+                  {adjustmentApplied
+                    ? "Ajuste aplicado"
+                    : `Aplicar ${formatPercent(adjustmentPercent)} a tus cargas`}
+                </Text>
+              </Pressable>
+            ) : adjustmentPercent !== undefined ? (
+              <Text style={styles.adviceDetail}>
+                Ajuste sugerido: {formatPercent(adjustmentPercent)} de carga. Cuando registres esta sesión
+                podré aplicarlo sobre las cargas de la vez anterior.
               </Text>
-            </Pressable>
+            ) : null}
           </View>
         ) : (
-          <Notice text="Sin datos de recuperación para hoy, así que no propongo ajustes." tone="info" />
+          <Notice
+            text="Todavía no consultaste tu estado de hoy, así que no propongo ajustes. Abre Estado y toca Actualizar."
+            tone="info"
+          />
         )}
 
-        {adjustmentApplied ? (
-          <Notice text={`Ajuste aplicado a esta sesión: ${advice?.title.toLowerCase()}.`} tone="info" />
+        {adjustmentApplied && adjustmentPercent !== undefined ? (
+          <Notice
+            text={`Cargas ajustadas ${formatPercent(adjustmentPercent)} respecto de la última vez en ${
+              adjustable.adjustedCount
+            } ${adjustable.adjustedCount === 1 ? "ejercicio" : "ejercicios"}. Puedes editarlas antes de guardar.`}
+            tone="info"
+          />
         ) : null}
 
         {existingLog ? (
@@ -327,67 +366,21 @@ export default function SessionScreen() {
         ))}
 
         {showLogForm ? (
-          <Card style={styles.logCard}>
-            <Text style={styles.logTitle}>Registro de la sesión</Text>
-
-            <View style={styles.field}>
-              <Text style={styles.fieldLabel}>Duración real (min)</Text>
-              <TextInput
-                value={duration}
-                onChangeText={setDuration}
-                keyboardType="number-pad"
-                placeholder={String(session.estimatedMinutes)}
-                placeholderTextColor={colors.textFaint}
-                style={styles.input}
-              />
-            </View>
-
-            <View style={styles.field}>
-              <Text style={styles.fieldLabel}>RPE de la sesión</Text>
-              <Scale value={sessionRpe ?? 0} min={1} max={10} onChange={setSessionRpe} />
-            </View>
-
-            <View style={styles.field}>
-              <Text style={styles.fieldLabel}>Dolor o molestias (0-10)</Text>
-              <Scale value={painLevel} min={0} max={10} onChange={setPainLevel} />
-              {needsPainEscalation({ pain: { level: painLevel } }) ? (
-                <Notice text={PAIN_ESCALATION_MESSAGE} tone="error" />
-              ) : null}
-            </View>
-
-            <View style={styles.field}>
-              <Text style={styles.fieldLabel}>Comentario</Text>
-              <TextInput
-                value={comment}
-                onChangeText={setComment}
-                placeholder="Cómo te sentiste, qué cambiarías…"
-                placeholderTextColor={colors.textFaint}
-                style={[styles.input, styles.textArea]}
-                multiline
-              />
-            </View>
-
-            {saveError ? <Notice text={saveError} tone="error" /> : null}
-
-            <Button
-              label={saving ? "Guardando…" : "Finalizar sesión"}
-              onPress={() => void handleFinish()}
-              loading={saving}
-            />
-            <Button label="Cancelar" variant="ghost" onPress={() => setShowLogForm(false)} />
-          </Card>
+          <SessionLogForm
+            estimatedMinutes={session.estimatedMinutes}
+            saving={saving}
+            saveError={saveError}
+            onSubmit={(values) => void handleFinish(values)}
+            onCancel={() => setShowLogForm(false)}
+          />
         ) : (
           <View style={styles.footerActions}>
             <Button label="Finalizar sesión" onPress={() => setShowLogForm(true)} />
-            <Button
-              label="Omitir sesión"
-              variant="ghost"
-              onPress={() => void markSession(session.id, "skipped").then(() => router.back())}
-            />
+            <Button label="Omitir sesión" variant="ghost" onPress={confirmSkip} />
           </View>
         )}
       </ScrollView>
-    </>
+    </KeyboardAwareScreen>
   );
 }
 
@@ -561,45 +554,15 @@ function RepeatSessionCard({
   );
 }
 
-/** Escala táctil de 0-10 / 1-10, cómoda con el pulgar. */
-function Scale({
-  value,
-  min,
-  max,
-  onChange,
-}: {
-  value: number;
-  min: number;
-  max: number;
-  onChange: (value: number) => void;
-}) {
-  const options = Array.from({ length: max - min + 1 }, (_, index) => min + index);
-  return (
-    <View style={styles.scale}>
-      {options.map((option) => (
-        <Pressable
-          key={option}
-          accessibilityRole="button"
-          accessibilityLabel={`Valor ${option}`}
-          onPress={() => onChange(option)}
-          style={[styles.scaleItem, value === option && styles.scaleItemActive]}
-        >
-          <Text style={[styles.scaleText, value === option && styles.scaleTextActive]}>{option}</Text>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-
 function adviceIcon(tone: "good" | "warning" | "bad"): IconRole {
   return tone === "good" ? "recoveryGood" : tone === "warning" ? "recoveryWarning" : "warning";
 }
 
-/**
- * Readiness usado por el banner mientras Garmin no está conectado.
- * Coincide con el snapshot demo del backend para no mostrar cifras contradictorias.
- */
-const DEMO_READINESS_SCORE = 62;
+/** "−15%" / "+7.5%", con el signo explícito porque la dirección es lo que importa. */
+function formatPercent(percent: number): string {
+  const rounded = Math.round(percent * 10) / 10;
+  return `${rounded > 0 ? "+" : "−"}${Math.abs(rounded)}%`;
+}
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
@@ -699,10 +662,7 @@ const styles = StyleSheet.create({
   },
   techniqueText: { ...typography.caption, color: colors.accent, fontWeight: "700" },
 
-  logCard: { gap: spacing.lg },
-  logTitle: { ...typography.subtitle, color: colors.text },
-  field: { gap: spacing.sm },
-  fieldLabel: { ...typography.label, color: colors.textMuted },
+  /** Campo de carga/reps dentro de una tarjeta de ejercicio. */
   input: {
     minHeight: TOUCH_TARGET,
     backgroundColor: colors.surfaceAlt,
@@ -713,22 +673,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     ...typography.body,
   },
-  textArea: { minHeight: 90, paddingTop: spacing.md, textAlignVertical: "top" },
-
-  scale: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  scaleItem: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  scaleItemActive: { backgroundColor: colors.accent, borderColor: colors.accent },
-  scaleText: { ...typography.bodyStrong, color: colors.textMuted },
-  scaleTextActive: { color: colors.onAccent },
 
   footerActions: { gap: spacing.sm },
 

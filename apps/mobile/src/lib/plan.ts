@@ -1,4 +1,10 @@
-import type { SessionStatus, TrainingPlan, TrainingSession, TrainingWeek } from "@ridelab/shared";
+import type {
+  PerformanceAssessment,
+  SessionStatus,
+  TrainingPlan,
+  TrainingSession,
+  TrainingWeek,
+} from "@ridelab/shared";
 
 /** Utilidades de lectura del plan que comparten Entrenamiento y el detalle. */
 
@@ -69,28 +75,15 @@ export const STATUS_LABEL: Record<SessionStatus, string> = {
 };
 
 /**
- * Traduce la recuperación de hoy a un ajuste sugerido para la sesión.
- * Devuelve `undefined` cuando no hay datos suficientes: no se inventa un consejo.
+ * Tono visual para un nivel de `PerformanceAssessment`.
+ *
+ * Antes vivía acá un `recoveryAdvice()` con sus propios umbrales, que competía
+ * con `assessPerformance()` de shared y llegó a mostrar un veredicto distinto
+ * al de Estado en la misma app. El único motor es el de shared: esto sólo
+ * traduce su resultado a color.
  */
-export interface RecoveryAdvice {
-  title: string;
-  detail: string;
-  tone: "good" | "warning" | "bad";
-}
-
-export function recoveryAdvice(
-  readinessScore: number | undefined,
-  supportingMetrics: string[],
-): RecoveryAdvice | undefined {
-  if (readinessScore === undefined) return undefined;
-
-  const detail = supportingMetrics.length
-    ? `Basado en ${supportingMetrics.join(", ")}.`
-    : "Basado en tu Training Readiness de hoy.";
-
-  if (readinessScore >= 75) return { title: "Sesión normal", detail, tone: "good" };
-  if (readinessScore >= 60) return { title: "Reducir intensidad", detail, tone: "warning" };
-  if (readinessScore >= 45) return { title: "Reducir volumen", detail, tone: "warning" };
-  if (readinessScore >= 30) return { title: "Priorizar movilidad", detail, tone: "bad" };
-  return { title: "Considerar descanso", detail, tone: "bad" };
+export function assessmentTone(level: PerformanceAssessment["level"]): "good" | "warning" | "bad" {
+  if (level === "push" || level === "solid") return "good";
+  if (level === "controlled") return "warning";
+  return "bad";
 }
