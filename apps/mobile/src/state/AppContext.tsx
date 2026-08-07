@@ -17,6 +17,7 @@ import {
   type SessionLog,
   type SessionStatus,
   type TrainingPlan,
+  type WellnessNote,
 } from "@ridelab/shared";
 import { api, ApiError } from "../api/client";
 import { buildChatTrainingHistoryEntries } from "../lib/calendar";
@@ -31,6 +32,7 @@ import {
   sessionExecutionRepository,
   sessionLogRepository,
   sessionStatusRepository,
+  wellnessNoteRepository,
 } from "../storage/repository";
 
 /** Ventana hacia atrás que cubre cada sincronización con Garmin. */
@@ -39,6 +41,8 @@ const SYNC_WINDOW_DAYS = 14;
 const STALE_SYNC_MINUTES = 15;
 /** Ventana de historial combinado que viaja disponible para la tool del agente. */
 const TRAINING_HISTORY_WINDOW_DAYS = 60;
+/** Ventana de notas subjetivas que viaja en cada mensaje (a diferencia del historial, sí se inyecta directo). */
+const WELLNESS_NOTES_WINDOW_DAYS = 14;
 
 export type GarminSyncStatus = "idle" | "syncing" | "synced" | "offline" | "error";
 export type PerformanceStatus = "idle" | "loading" | "loaded" | "error";
@@ -73,6 +77,8 @@ interface AppState {
   garminStatus: GarminStatus;
   sending: boolean;
   chatError: string | undefined;
+  /** Notas subjetivas ("cómo me siento"), más reciente al final. */
+  wellnessNotes: WellnessNote[];
 }
 
 interface AppActions {
@@ -117,6 +123,8 @@ interface AppActions {
   updateProfile: (patch: Partial<AthleteProfile>) => Promise<void>;
   refreshGarminStatus: () => Promise<void>;
   clearChatError: () => void;
+  /** Guarda (o reemplaza) la nota subjetiva del día — una por fecha. */
+  saveWellnessNote: (date: string, note: string) => Promise<WellnessNote>;
 }
 
 const INITIAL_GARMIN_STATUS: GarminStatus = {
@@ -150,6 +158,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [garminStatusLoaded, setGarminStatusLoaded] = useState(false);
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState<string | undefined>();
+  const [wellnessNotes, setWellnessNotes] = useState<WellnessNote[]>([]);
   // Evita dos sincronizaciones concurrentes (montaje + regreso a primer plano casi simultáneos).
   const syncingRef = useRef(false);
 
@@ -167,6 +176,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         storedMatches,
         storedProfile,
         storedPerformance,
+        storedWellnessNotes,
       ] = await Promise.all([
         planRepository.list(),
         planRepository.getActiveId(),
@@ -178,6 +188,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         activitySessionMatchRepository.list(),
         profileRepository.get(),
         performanceRepository.get(),
+        wellnessNoteRepository.list(),
       ]);
 
       setPlans(storedPlans);
@@ -189,6 +200,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setActivities(storedActivities);
       setMatches(storedMatches);
       setProfile(storedProfile);
+      setWellnessNotes(storedWellnessNotes);
       if (storedPerformance) {
         setPerformanceResponse(storedPerformance.response);
         setPerformanceUpdatedAt(storedPerformance.updatedAt);
@@ -266,6 +278,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           trainingHistory: buildChatTrainingHistoryEntries(plans, executions, activities, matches).filter(
             (entry) => entry.date >= historyCutoff,
           ),
+          // A diferencia de trainingHistory, esto sí viaja directo en el
+          // prompt: son pocas notas cortas y el coach las necesita siempre,
+          // no sólo cuando las pide explícitamente vía tool.
+          subjectiveNotes: wellnessNotes.filter(
+            (note) => note.date >= new Date(Date.now() - WELLNESS_NOTES_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10),
+          ),
         });
 
         setMessages((current) => [...current, response.message]);
@@ -281,7 +299,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setSending(false);
       }
     },
-    [messages, profile, activePlanId, logs, plans, executions, activities, matches, sending],
+    [messages, profile, activePlanId, logs, plans, executions, activities, matches, sending, wellnessNotes],
   );
 
   const savePlan = useCallback(async (plan: TrainingPlan) => {
@@ -457,7 +475,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setPerformanceStatus("loading");
     setPerformanceError(undefined);
     try {
-      const response = await api.getPerformance();
+      const todayKey = new Date().toISOString().slice(0, 10);
+      const todayNote = wellnessNotes.find((item) => item.date === todayKey)?.note;
+      const response = await api.getPerformance(todayNote);
       const stored = await performanceRepository.save(response);
       setPerformanceResponse(stored.response);
       setPerformanceUpdatedAt(stored.updatedAt);
@@ -468,7 +488,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         error instanceof ApiError ? error.message : "No se pudo actualizar tu estado. Inténtalo de nuevo.",
       );
     }
-  }, []);
+  }, [wellnessNotes]);
 
   // Siembra el escenario demo del 5 de agosto una sola vez, y sólo mientras Garmin
   // está en modo simulado — nunca mezcla datos falsos con una cuenta real.
@@ -514,6 +534,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setProfile(await profileRepository.merge(patch));
   }, []);
 
+  const saveWellnessNote = useCallback(async (date: string, note: string) => {
+    const saved = await wellnessNoteRepository.save(date, note);
+    setWellnessNotes(await wellnessNoteRepository.list());
+    return saved;
+  }, []);
+
   const clearLoadsPrefill = useCallback(() => setPendingLoadsPrefillExecutionId(undefined), []);
 
   const value = useMemo(
@@ -539,6 +565,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       garminStatus,
       sending,
       chatError,
+      wellnessNotes,
       sendMessage,
       savePlan,
       setActivePlan,
@@ -556,6 +583,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       refreshPerformance,
       updateProfile,
       refreshGarminStatus,
+      saveWellnessNote,
       clearChatError: () => setChatError(undefined),
     }),
     [
@@ -580,6 +608,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       garminStatus,
       sending,
       chatError,
+      wellnessNotes,
       sendMessage,
       savePlan,
       setActivePlan,
@@ -597,6 +626,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       refreshPerformance,
       updateProfile,
       refreshGarminStatus,
+      saveWellnessNote,
     ],
   );
 

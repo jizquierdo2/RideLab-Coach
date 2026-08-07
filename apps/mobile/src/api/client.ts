@@ -131,7 +131,11 @@ export const api = {
   disconnectGarmin: () =>
     request<{ connected: false }>("/api/garmin/disconnect", { method: "POST" }),
 
-  getPerformance: () => request<PerformanceResponse>("/api/garmin/performance"),
+  /** @param todayNote nota subjetiva del día ("cómo me siento"), si existe — contexto extra para el mensaje del coach. */
+  getPerformance: (todayNote?: string) =>
+    request<PerformanceResponse>(
+      `/api/garmin/performance${todayNote ? `?note=${encodeURIComponent(todayNote)}` : ""}`,
+    ),
 
   getGarminActivities: (startDate: string, endDate: string) =>
     request<{ activities: GarminActivity[] }>(

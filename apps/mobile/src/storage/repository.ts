@@ -9,6 +9,7 @@ import {
   trainingPlanSchema,
   athleteProfileSchema,
   validateTrainingPlan,
+  wellnessNoteSchema,
   type ActivitySessionMatch,
   type AthleteProfile,
   type GarminActivity,
@@ -18,6 +19,7 @@ import {
   type SessionLog,
   type SessionStatus,
   type TrainingPlan,
+  type WellnessNote,
 } from "@ridelab/shared";
 
 /**
@@ -39,6 +41,7 @@ const KEYS = {
   calendarDemoSeeded: "ridelab:calendarDemoSeeded",
   performance: "ridelab:performance",
   occurrences: "ridelab:occurrences",
+  wellnessNotes: "ridelab:wellnessNotes",
 } as const;
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
@@ -497,6 +500,38 @@ export const performanceRepository = {
     const stored: StoredPerformance = { response: parsed, updatedAt: new Date().toISOString() };
     await writeJson(KEYS.performance, stored);
     return stored;
+  },
+};
+
+/**
+ * Notas subjetivas ("cómo me siento"). Una por día: guardar de nuevo para el
+ * mismo día reemplaza la nota anterior en vez de acumular duplicados.
+ */
+export const wellnessNoteRepository = {
+  async list(): Promise<WellnessNote[]> {
+    const raw = await readJson<unknown[]>(KEYS.wellnessNotes, []);
+    return raw
+      .map((item) => wellnessNoteSchema.safeParse(item))
+      .filter((result): result is { success: true; data: WellnessNote } => result.success)
+      .map((result) => result.data)
+      .sort((a, b) => a.date.localeCompare(b.date));
+  },
+
+  async forDate(date: string): Promise<WellnessNote | undefined> {
+    const notes = await wellnessNoteRepository.list();
+    return notes.find((note) => note.date === date);
+  },
+
+  async save(date: string, note: string): Promise<WellnessNote> {
+    const notes = await wellnessNoteRepository.list();
+    const saved: WellnessNote = {
+      id: notes.find((item) => item.date === date)?.id ?? uniqueId(`note_${date}`),
+      date,
+      note,
+      createdAt: new Date().toISOString(),
+    };
+    await writeJson(KEYS.wellnessNotes, [...notes.filter((item) => item.date !== date), saved]);
+    return saved;
   },
 };
 

@@ -17,6 +17,7 @@ import {
   sessionExecutionRepository,
   sessionLogRepository,
   sessionStatusRepository,
+  wellnessNoteRepository,
 } from "./repository";
 
 /**
@@ -329,5 +330,46 @@ describe("profileRepository", () => {
     const profile = await profileRepository.get();
     expect(profile?.goals).toEqual(["Resistir descensos"]);
     expect(profile?.daysPerWeek).toBe(2);
+  });
+});
+
+describe("wellnessNoteRepository", () => {
+  it("guarda una nota y la recupera por fecha", async () => {
+    await wellnessNoteRepository.save("2026-08-07", "Piernas pesadas, dormí poco");
+
+    const note = await wellnessNoteRepository.forDate("2026-08-07");
+    expect(note?.note).toBe("Piernas pesadas, dormí poco");
+  });
+
+  it("guardar de nuevo para el mismo día reemplaza la nota anterior, no acumula", async () => {
+    await wellnessNoteRepository.save("2026-08-07", "Cansado");
+    await wellnessNoteRepository.save("2026-08-07", "Con energía");
+
+    const notes = await wellnessNoteRepository.list();
+    expect(notes).toHaveLength(1);
+    expect(notes[0].note).toBe("Con energía");
+  });
+
+  it("mantiene el mismo id al reemplazar la nota del día", async () => {
+    const first = await wellnessNoteRepository.save("2026-08-07", "Cansado");
+    const second = await wellnessNoteRepository.save("2026-08-07", "Con energía");
+
+    expect(second.id).toBe(first.id);
+  });
+
+  it("list() devuelve ordenado por fecha ascendente", async () => {
+    await wellnessNoteRepository.save("2026-08-06", "Ayer");
+    await wellnessNoteRepository.save("2026-08-04", "Antes de ayer");
+    await wellnessNoteRepository.save("2026-08-07", "Hoy");
+
+    const notes = await wellnessNoteRepository.list();
+    expect(notes.map((n) => n.date)).toEqual(["2026-08-04", "2026-08-06", "2026-08-07"]);
+  });
+
+  it("sobrevive un reinicio: releer desde el almacenamiento conserva la nota", async () => {
+    await wellnessNoteRepository.save("2026-08-07", "Con energía");
+
+    const reread = await wellnessNoteRepository.forDate("2026-08-07");
+    expect(reread?.note).toBe("Con energía");
   });
 });

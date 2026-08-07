@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useMemo, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { formatSantiagoTime } from "@ridelab/shared";
@@ -8,7 +8,7 @@ import { Loading, Notice } from "../../src/components/ui";
 import { Icon, type IconRole } from "../../src/components/icon";
 import { countExercises, nextSession } from "../../src/lib/plan";
 import { colors, radius, spacing, TOUCH_TARGET, typography } from "../../src/theme";
-import type { PerformanceAssessment } from "@ridelab/shared";
+import type { PerformanceAssessment, WellnessNote } from "@ridelab/shared";
 
 /** Nivel de assessment → paleta de la tarjeta principal. Recover/insufficient usan el par rojo de M3. */
 const DARK_LEVELS = new Set<PerformanceAssessment["level"]>(["push", "solid", "controlled"]);
@@ -35,6 +35,8 @@ export default function EstadoScreen() {
     performanceStatus,
     performanceError,
     refreshPerformance,
+    wellnessNotes,
+    saveWellnessNote,
   } = useApp();
 
   useEffect(() => {
@@ -77,6 +79,8 @@ export default function EstadoScreen() {
           <Icon role="sync" size={22} color={colors.text} />
         </Pressable>
       </View>
+
+      <WellnessNoteCard notes={wellnessNotes} onSave={saveWellnessNote} />
 
       {garminStatus.status === "demo" ? <Notice text={garminStatus.message} /> : null}
       {performanceError ? <Notice text={performanceError} tone="error" /> : null}
@@ -242,6 +246,69 @@ function MetricCell({ label, value, dark }: { label: string; value: string; dark
   );
 }
 
+/**
+ * "Cómo te sientes hoy": nota subjetiva de texto libre, una por día. Se envía
+ * al coach (chat y mensaje de Estado) como contexto cualitativo — nunca cambia
+ * el nivel calculado, que siempre sale sólo de métricas objetivas.
+ */
+function WellnessNoteCard({
+  notes,
+  onSave,
+}: {
+  notes: WellnessNote[];
+  onSave: (date: string, note: string) => Promise<WellnessNote>;
+}) {
+  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const existing = useMemo(() => notes.find((item) => item.date === today), [notes, today]);
+  const [draft, setDraft] = useState(existing?.note ?? "");
+  const [saving, setSaving] = useState(false);
+  const [savedJustNow, setSavedJustNow] = useState(false);
+
+  const dirty = draft.trim() !== (existing?.note ?? "");
+
+  const handleSave = async () => {
+    const trimmed = draft.trim();
+    if (!trimmed || saving) return;
+    setSaving(true);
+    try {
+      await onSave(today, trimmed);
+      setSavedJustNow(true);
+      setTimeout(() => setSavedJustNow(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <View style={styles.wellnessCard}>
+      <Text style={styles.wellnessLabel}>¿CÓMO TE SIENTES HOY?</Text>
+      <TextInput
+        value={draft}
+        onChangeText={setDraft}
+        placeholder="Piernas pesadas, con energía, dormí mal aunque el reloj diga bien…"
+        placeholderTextColor={colors.textFaint}
+        style={styles.wellnessInput}
+        multiline
+      />
+      <View style={styles.wellnessFooter}>
+        <Text style={styles.wellnessHint}>
+          {savedJustNow ? "Guardado — el coach ya lo tiene en cuenta." : "Es texto libre, no una métrica de Garmin."}
+        </Text>
+        {dirty ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={saving || !draft.trim()}
+            onPress={() => void handleSave()}
+            style={[styles.wellnessSaveButton, (saving || !draft.trim()) && styles.wellnessSaveButtonDisabled]}
+          >
+            <Text style={styles.wellnessSaveButtonText}>{saving ? "Guardando…" : "Guardar"}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 function DriverRow({ text }: { text: string }) {
   return (
     <View style={styles.driverRow}>
@@ -267,6 +334,33 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceContainerHighest,
   },
   syncButtonDisabled: { opacity: 0.5 },
+
+  wellnessCard: {
+    backgroundColor: colors.surfaceContainerLow,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  wellnessLabel: { ...typography.label, color: colors.textMuted, fontSize: 11 },
+  wellnessInput: {
+    minHeight: 44,
+    maxHeight: 110,
+    color: colors.text,
+    ...typography.body,
+    textAlignVertical: "top",
+  },
+  wellnessFooter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.sm },
+  wellnessHint: { ...typography.caption, color: colors.textFaint, flex: 1 },
+  wellnessSaveButton: {
+    minHeight: 36,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  wellnessSaveButtonDisabled: { opacity: 0.5 },
+  wellnessSaveButtonText: { ...typography.caption, color: colors.onAccent, fontWeight: "700" },
 
   mainCard: { borderRadius: radius.lg, padding: spacing.lg, gap: spacing.md },
   mainCardDark: { backgroundColor: colors.featureCard },
