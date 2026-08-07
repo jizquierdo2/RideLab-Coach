@@ -1,6 +1,7 @@
 import React from "react";
 import { Tabs } from "expo-router";
-import { StyleSheet, type ColorValue } from "react-native";
+import { StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "../../src/components/icon";
 import { colors, spacing, typography } from "../../src/theme";
 
@@ -9,13 +10,21 @@ import { colors, spacing, typography } from "../../src/theme";
  * Los detalles se abren apilados, no como pestañas extra.
  */
 export default function TabsLayout() {
+  // Sin sumar el inset, la barra de gestos de Android queda encima de las
+  // etiquetas: alto y padding fijos no alcanzan en pantallas con navegación
+  // por gestos.
+  const insets = useSafeAreaInsets();
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.textFaint,
-        tabBarStyle: styles.tabBar,
+        tabBarStyle: [
+          styles.tabBar,
+          { height: TAB_BAR_HEIGHT + insets.bottom, paddingBottom: spacing.sm + insets.bottom },
+        ],
         tabBarLabelStyle: styles.tabLabel,
       }}
     >
@@ -51,13 +60,14 @@ export default function TabsLayout() {
   );
 }
 
+/** Alto de la barra sin contar el área segura del dispositivo. */
+const TAB_BAR_HEIGHT = 64;
+
 const styles = StyleSheet.create({
   tabBar: {
     backgroundColor: colors.surface,
     borderTopColor: colors.border,
     borderTopWidth: 1,
-    height: 64,
-    paddingBottom: spacing.sm,
     paddingTop: spacing.sm,
   },
   tabLabel: { ...typography.caption, fontWeight: "600" },

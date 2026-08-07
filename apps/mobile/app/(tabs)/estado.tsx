@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { formatSantiagoTime } from "@ridelab/shared";
 import { useApp } from "../../src/state/AppContext";
+import { KeyboardAwareScreen } from "../../src/components/keyboard";
 import { Loading, Notice } from "../../src/components/ui";
 import { Icon, type IconRole } from "../../src/components/icon";
 import { countExercises, nextSession } from "../../src/lib/plan";
@@ -57,9 +58,13 @@ export default function EstadoScreen() {
   const loading = performanceStatus === "loading";
 
   return (
+    <KeyboardAwareScreen>
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + spacing.xxl }]}
+      refreshControl={
+        <RefreshControl refreshing={loading} onRefresh={() => void refreshPerformance()} tintColor={colors.accent} colors={[colors.accent]} />
+      }
     >
       <View style={styles.header}>
         <View>
@@ -226,6 +231,7 @@ export default function EstadoScreen() {
         </View>
       ) : null}
     </ScrollView>
+    </KeyboardAwareScreen>
   );
 }
 

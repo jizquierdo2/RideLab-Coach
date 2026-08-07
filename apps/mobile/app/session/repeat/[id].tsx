@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { formatSantiagoDayLabel } from "@ridelab/shared";
 import { useApp } from "../../../src/state/AppContext";
+import { KeyboardAwareScreen } from "../../../src/components/keyboard";
 import { EmptyState, Loading, Notice } from "../../../src/components/ui";
 import { Icon } from "../../../src/components/icon";
 import { findPlannedSession } from "../../../src/lib/calendar";
@@ -96,7 +97,7 @@ export default function RepeatSessionScreen() {
   };
 
   return (
-    <>
+    <KeyboardAwareScreen>
       <Stack.Screen options={{ title: "Repetir sesión", presentation: "modal" }} />
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         <View style={styles.summary}>
@@ -180,7 +181,7 @@ export default function RepeatSessionScreen() {
           </View>
         )}
       </ScrollView>
-    </>
+    </KeyboardAwareScreen>
   );
 }
 

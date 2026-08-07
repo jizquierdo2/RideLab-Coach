@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { formatSantiagoTime, santiagoDayKey } from "@ridelab/shared";
 import { useApp } from "../../../src/state/AppContext";
@@ -115,7 +115,10 @@ export default function DayDetailScreen() {
                           <Pressable
                             accessibilityRole="button"
                             onPress={() =>
-                              void unlinkMatch(record.execution.id, record.garminActivity!.id)
+                              confirmUnlink(
+                                record.garminActivity!.name,
+                                () => void unlinkMatch(record.execution.id, record.garminActivity!.id),
+                              )
                             }
                             style={styles.actionButtonDanger}
                           >
@@ -154,6 +157,18 @@ export default function DayDetailScreen() {
         )}
       </ScrollView>
     </>
+  );
+}
+
+/** Desvincular borra la relación con Garmin, así que se confirma antes. */
+function confirmUnlink(activityName: string, onConfirm: () => void) {
+  Alert.alert(
+    "¿Desvincular esta actividad?",
+    `"${activityName}" dejará de estar asociada a esta sesión. Puedes volver a vincularla después.`,
+    [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Desvincular", style: "destructive", onPress: onConfirm },
+    ],
   );
 }
 

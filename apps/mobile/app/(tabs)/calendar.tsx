@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { formatSantiagoTime, santiagoDayKey } from "@ridelab/shared";
+import { formatSantiagoDayLabel, formatSantiagoTime, santiagoDayKey } from "@ridelab/shared";
 import { useApp } from "../../src/state/AppContext";
 import { Badge, Loading, Notice } from "../../src/components/ui";
 import { Icon } from "../../src/components/icon";
@@ -79,6 +79,14 @@ export default function CalendarScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + spacing.xxl }]}
+      refreshControl={
+        <RefreshControl
+          refreshing={garminSyncStatus === "syncing"}
+          onRefresh={() => void syncGarminActivities()}
+          tintColor={colors.accent}
+          colors={[colors.accent]}
+        />
+      }
     >
       <Text style={styles.screenTitle}>Calendario</Text>
 
@@ -155,6 +163,8 @@ export default function CalendarScreen() {
                 <Pressable
                   key={key}
                   accessibilityRole="button"
+                  accessibilityState={{ selected: isSelected }}
+                  accessibilityLabel={dayAccessibilityLabel(date, isToday, day)}
                   onPress={() => setSelectedDay(key)}
                   style={[
                     styles.dayCell,
@@ -171,9 +181,12 @@ export default function CalendarScreen() {
                   >
                     {date.getDate()}
                   </Text>
+                  {/* Cada estado tiene forma propia además de color: relleno,
+                      anillo y check. Con daltonismo rojo-verde los dos verdes
+                      del tema eran casi el mismo punto. */}
                   <View style={styles.dots}>
-                    {day?.hasPlanned ? <View style={[styles.dot, { backgroundColor: colors.primaryContainer }]} /> : null}
-                    {day?.hasGarmin ? <View style={[styles.dot, { backgroundColor: colors.secondary }]} /> : null}
+                    {day?.hasPlanned ? <View style={[styles.dot, styles.dotPlanned]} /> : null}
+                    {day?.hasGarmin ? <View style={[styles.dot, styles.dotGarmin]} /> : null}
                     {day?.isLinked ? (
                       <Icon role="checkCircleFilled" size={10} color={isSelected ? colors.onPrimaryContainer : colors.primary} />
                     ) : null}
@@ -186,9 +199,9 @@ export default function CalendarScreen() {
       </View>
 
       <View style={styles.legend}>
-        <LegendItem color={colors.primaryContainer} label="Planificado" />
-        <LegendItem color={colors.secondary} label="Garmin" />
-        <LegendItem color={colors.primary} label="Vinculado" icon />
+        <LegendItem shape="planned" label="Planificado" />
+        <LegendItem shape="garmin" label="Garmin" />
+        <LegendItem shape="linked" label="Vinculado" />
       </View>
 
       <View style={styles.monthSummary}>
@@ -202,7 +215,7 @@ export default function CalendarScreen() {
         onPress={() => router.push(`/calendar/day/${selectedDay}`)}
         style={styles.dayHeaderRow}
       >
-        <Text style={styles.dayHeaderTitle}>{selectedDay}</Text>
+        <Text style={styles.dayHeaderTitle}>{formatSelectedDay(selectedDay)}</Text>
         <Icon role="chevronRight" size={18} color={colors.textFaint} />
       </Pressable>
 
@@ -250,13 +263,39 @@ export default function CalendarScreen() {
   );
 }
 
-function LegendItem({ color, label, icon }: { color: string; label: string; icon?: boolean }) {
+/**
+ * "6 de agosto" en vez de "2026-08-06". La clave `YYYY-MM-DD` es formato de
+ * almacenamiento, no algo que deba leer el usuario. Se construye la fecha en
+ * hora local a partir de sus partes: `new Date("2026-08-06")` la interpretaría
+ * como UTC y en Chile mostraría el día anterior.
+ */
+function formatSelectedDay(key: string): string {
+  const [year, month, day] = key.split("-").map(Number);
+  return formatSantiagoDayLabel(new Date(year, month - 1, day, 12).toISOString());
+}
+
+/** Descripción hablada de un día: número, si es hoy y qué tiene registrado. */
+function dayAccessibilityLabel(
+  date: Date,
+  isToday: boolean,
+  indicators: { hasPlanned: boolean; hasGarmin: boolean; isLinked: boolean } | undefined,
+): string {
+  const parts = [`${date.getDate()} de ${MONTH_LABELS[date.getMonth()].toLowerCase()}`];
+  if (isToday) parts.push("hoy");
+  if (indicators?.hasPlanned) parts.push("con sesión");
+  if (indicators?.hasGarmin) parts.push("con actividad de Garmin");
+  if (indicators?.isLinked) parts.push("vinculada");
+  if (!indicators?.hasPlanned && !indicators?.hasGarmin) parts.push("sin actividad");
+  return parts.join(", ");
+}
+
+function LegendItem({ shape, label }: { shape: "planned" | "garmin" | "linked"; label: string }) {
   return (
     <View style={styles.legendItem}>
-      {icon ? (
-        <Icon role="checkCircleFilled" size={10} color={color} />
+      {shape === "linked" ? (
+        <Icon role="checkCircleFilled" size={10} color={colors.primary} />
       ) : (
-        <View style={[styles.dot, { backgroundColor: color }]} />
+        <View style={[styles.dot, shape === "planned" ? styles.dotPlanned : styles.dotGarmin]} />
       )}
       <Text style={styles.legendLabel}>{label}</Text>
     </View>
@@ -327,8 +366,12 @@ const styles = StyleSheet.create({
   dayNumber: { ...typography.caption, color: colors.text },
   dayNumberSelected: { color: colors.onPrimaryContainer, fontWeight: "700" },
   dayNumberToday: { color: colors.accent, fontWeight: "700" },
-  dots: { flexDirection: "row", gap: 2, marginTop: 4, minHeight: 8 },
-  dot: { width: 5, height: 5, borderRadius: 2.5 },
+  dots: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 4, minHeight: 8 },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  /** Planificado: punto relleno. */
+  dotPlanned: { backgroundColor: colors.primaryContainer },
+  /** Garmin: anillo hueco — distinguible del anterior aunque no se perciba el color. */
+  dotGarmin: { borderWidth: 1.5, borderColor: colors.secondary, backgroundColor: "transparent" },
 
   legend: { flexDirection: "row", gap: spacing.lg, marginTop: spacing.xs },
   legendItem: { flexDirection: "row", alignItems: "center", gap: spacing.xs },

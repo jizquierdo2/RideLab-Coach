@@ -4,6 +4,7 @@ import { Stack, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApp } from "../src/state/AppContext";
 import { api, ApiError } from "../src/api/client";
+import { KeyboardAwareScreen } from "../src/components/keyboard";
 import { Button, Card, Loading, Notice, StatusDot } from "../src/components/ui";
 import { colors, radius, spacing, TOUCH_TARGET, typography } from "../src/theme";
 
@@ -59,7 +60,7 @@ export default function GarminLoginScreen() {
   if (!ready) return <Loading />;
 
   return (
-    <>
+    <KeyboardAwareScreen>
       <Stack.Screen options={{ title: "Garmin" }} />
       <ScrollView
         style={styles.container}
@@ -137,7 +138,7 @@ export default function GarminLoginScreen() {
           </>
         )}
       </ScrollView>
-    </>
+    </KeyboardAwareScreen>
   );
 }
 
