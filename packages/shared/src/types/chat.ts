@@ -59,6 +59,10 @@ export const chatMessageSchema = z.object({
   error: z.string().optional(),
 });
 
+/** Disciplinas de MTB reconocidas — cada una tiene demandas físicas distintas. */
+export const RIDING_DISCIPLINES = ["xc", "trail", "enduro", "downhill", "gravel", "e-bike"] as const;
+export type RidingDiscipline = (typeof RIDING_DISCIPLINES)[number];
+
 /** Lo que el usuario ya contestó, para no volver a preguntarlo. */
 export const athleteProfileSchema = z.object({
   goals: z.array(z.string()).default([]),
@@ -68,6 +72,13 @@ export const athleteProfileSchema = z.object({
   experienceLevel: z.enum(["beginner", "intermediate", "advanced"]).optional(),
   limitations: z.array(z.string()).default([]),
   weeklySports: z.array(z.string()).default([]),
+  /** Para calibrar cargas (loadGuidance) sin que el usuario tenga que repetirlo en cada mensaje. */
+  weightKg: z.number().positive().max(300).optional(),
+  heightCm: z.number().positive().max(250).optional(),
+  /** Puede practicar más de una — cambia qué patrones de fuerza priorizar. */
+  ridingDisciplines: z.array(z.enum(RIDING_DISCIPLINES)).default([]),
+  /** Texto libre: gustos, terreno favorito, competencias, lo que no entra en un campo estructurado. */
+  notes: z.string().max(500).optional(),
 });
 
 /**

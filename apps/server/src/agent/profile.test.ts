@@ -84,6 +84,7 @@ describe("resolveAthleteProfile", () => {
         experienceLevel: "advanced",
         limitations: ["Molestia en el hombro"],
         weeklySports: ["MTB"],
+        ridingDisciplines: [],
       },
     });
 

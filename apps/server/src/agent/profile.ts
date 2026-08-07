@@ -1,4 +1,4 @@
-import { EXERCISE_CATALOG, type AthleteProfile, type ChatRequest } from "@ridelab/shared";
+import { EXERCISE_CATALOG, RIDING_DISCIPLINES, type AthleteProfile, type ChatRequest, type RidingDiscipline } from "@ridelab/shared";
 
 /**
  * Extrae el perfil del atleta desde la conversación.
@@ -108,6 +108,37 @@ function parseLimitations(text: string): string[] {
   return limitations;
 }
 
+/** "peso 90 kilos", "peso mas o menos 90 kg" — el número inmediatamente antes de kilo(s)/kg. */
+function parseWeightKg(text: string): number | undefined {
+  const match = text.match(/(\d{2,3}(?:[.,]\d)?)\s*(?:kilos?|kg)\b/);
+  return match ? Number(match[1].replace(",", ".")) : undefined;
+}
+
+/** "mido 187", "1.87 m", "187 cm" — cubre las tres formas más comunes de decir la estatura. */
+function parseHeightCm(text: string): number | undefined {
+  const meters = text.match(/(?:mido\s*)?1[.,](\d{2})\s*m(?:etros)?\b/);
+  if (meters) return 100 + Number(meters[1]);
+
+  const cm = text.match(/(?:mido\s*)?(1\d{2})\s*cm\b/);
+  if (cm) return Number(cm[1]);
+
+  const bare = text.match(/\bmido\s*(1\d{2})\b/);
+  if (bare) return Number(bare[1]);
+
+  return undefined;
+}
+
+function parseRidingDisciplines(text: string): RidingDiscipline[] {
+  const found = new Set<RidingDiscipline>();
+  if (/\b(xc|cross[\s-]?country)\b/.test(text)) found.add("xc");
+  if (/\btrail\b/.test(text)) found.add("trail");
+  if (/\benduro\b/.test(text)) found.add("enduro");
+  if (/\b(downhill|dh)\b/.test(text)) found.add("downhill");
+  if (/\bgravel\b/.test(text)) found.add("gravel");
+  if (/\be-?bike\b/.test(text)) found.add("e-bike");
+  return RIDING_DISCIPLINES.filter((discipline) => found.has(discipline));
+}
+
 function parseGoals(text: string): string[] {
   const goals: string[] = [];
   if (/\b(descenso|bajada|downhill|enduro)/.test(text)) goals.push("Resistir descensos largos");
@@ -163,6 +194,10 @@ export function resolveAthleteProfile(request: ChatRequest): ResolvedProfile {
       experienceLevel,
       limitations,
       weeklySports: stored?.weeklySports ?? [],
+      weightKg: stored?.weightKg ?? parseWeightKg(text),
+      heightCm: stored?.heightCm ?? parseHeightCm(text),
+      ridingDisciplines: stored?.ridingDisciplines?.length ? stored.ridingDisciplines : parseRidingDisciplines(text),
+      notes: stored?.notes,
     },
     missing,
   };

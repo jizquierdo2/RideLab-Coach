@@ -51,6 +51,7 @@ export default function RootLayout() {
           />
           <Stack.Screen name="plan/[id]" options={{ title: "Plan" }} />
           <Stack.Screen name="garmin-login" options={{ title: "Garmin", presentation: "modal" }} />
+          <Stack.Screen name="profile" options={{ title: "Tu perfil", presentation: "modal" }} />
           <Stack.Screen name="calendar/day/[date]" options={{ title: "Día" }} />
           <Stack.Screen name="calendar/activity/[activityId]" options={{ title: "Actividad" }} />
           <Stack.Screen

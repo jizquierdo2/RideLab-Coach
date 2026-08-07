@@ -25,6 +25,7 @@ const fullProfile = {
   experienceLevel: "intermediate" as const,
   limitations: [],
   weeklySports: ["MTB"],
+  ridingDisciplines: [],
 };
 
 describe("respuestas sobre métricas", () => {

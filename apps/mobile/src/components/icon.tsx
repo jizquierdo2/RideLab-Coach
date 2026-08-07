@@ -50,6 +50,7 @@ const ICON_MAP = {
   close: "close",
   repeat: "replay",
   event: "event",
+  profile: "person",
 } as const satisfies Record<string, MaterialIconName>;
 
 export type IconRole = keyof typeof ICON_MAP;

@@ -101,15 +101,25 @@ export default function ChatScreen() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
         <View style={styles.headerTop}>
           <Text style={styles.coachName}>Coach</Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Estado de Garmin"
-            onPress={() => router.push("/garmin-login")}
-            style={styles.statusPill}
-          >
-            <StatusDot status={garminStatus.status} />
-            <Text style={styles.statusText}>{garminStatus.message}</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Tu perfil"
+              onPress={() => router.push("/profile")}
+              style={styles.iconButton}
+            >
+              <Icon role="profile" size={20} color={colors.textMuted} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Estado de Garmin"
+              onPress={() => router.push("/garmin-login")}
+              style={styles.statusPill}
+            >
+              <StatusDot status={garminStatus.status} />
+              <Text style={styles.statusText}>{garminStatus.message}</Text>
+            </Pressable>
+          </View>
         </View>
         <Text style={styles.syncText}>Última sincronización: {lastSync}</Text>
       </View>
@@ -271,6 +281,15 @@ const styles = StyleSheet.create({
   },
   headerTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   coachName: { ...typography.display, color: colors.text },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  iconButton: {
+    width: TOUCH_TARGET,
+    height: TOUCH_TARGET,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+  },
   statusPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -279,7 +298,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
-    maxWidth: "62%",
+    maxWidth: "52%",
   },
   statusText: { ...typography.caption, color: colors.textMuted, flexShrink: 1 },
   syncText: { ...typography.caption, color: colors.textFaint },
