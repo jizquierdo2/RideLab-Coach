@@ -104,6 +104,41 @@ export const activitySchema = z.object({
   hrZones: z.array(activityHrZoneSchema).optional(),
 });
 
+export const dailyActivityMetricsSchema = z.object({
+  date: z.string(),
+  steps: z.number().optional(),
+  stepGoal: z.number().optional(),
+  floorsAscended: z.number().optional(),
+  intensityMinutesModerate: z.number().optional(),
+  intensityMinutesVigorous: z.number().optional(),
+  intensityMinutesGoal: z.number().optional(),
+});
+
+export const respirationMetricsSchema = z.object({
+  date: z.string(),
+  avgBreathsPerMinute: z.number().optional(),
+  lowestBreathsPerMinute: z.number().optional(),
+  highestBreathsPerMinute: z.number().optional(),
+});
+
+export const spo2MetricsSchema = z.object({
+  date: z.string(),
+  averagePercent: z.number().optional(),
+  lowestPercent: z.number().optional(),
+});
+
+/** Resumen diario compacto para preguntas sobre un día o rango puntual — nunca las lecturas crudas de alta frecuencia. */
+export const historicalMetricsDaySchema = z.object({
+  date: z.string(),
+  sleepScore: z.number().optional(),
+  sleepDurationMinutes: z.number().optional(),
+  hrvOvernightAvgMs: z.number().optional(),
+  hrvStatus: z.string().optional(),
+  trainingReadinessScore: z.number().optional(),
+  stressAvgLevel: z.number().optional(),
+});
+export type HistoricalMetricsDay = z.infer<typeof historicalMetricsDaySchema>;
+
 export const weeklyTrendSchema = z.object({
   weekStart: z.string(),
   totalDurationMinutes: z.number().optional(),
@@ -137,6 +172,13 @@ export const garminSnapshotSchema = z.object({
   trainingStatus: trainingStatusSchema.optional(),
   vo2max: z.number().optional(),
   fitnessAge: z.number().optional(),
+  dailyActivity: dailyActivityMetricsSchema.optional(),
+  respiration: respirationMetricsSchema.optional(),
+  spo2: spo2MetricsSchema.optional(),
+  hillScore: z.number().optional(),
+  enduranceScore: z.number().optional(),
+  cyclingFtpWatts: z.number().optional(),
+  lactateThresholdBpm: z.number().optional(),
   recentActivities: z.array(activitySchema).default([]),
   weeklyTrends: z.array(weeklyTrendSchema).default([]),
   /** Métricas que se intentaron leer y no existían. El agente debe decirlo. */
@@ -151,6 +193,9 @@ export type TrainingReadiness = z.infer<typeof trainingReadinessSchema>;
 export type TrainingStatus = z.infer<typeof trainingStatusSchema>;
 export type Activity = z.infer<typeof activitySchema>;
 export type WeeklyTrend = z.infer<typeof weeklyTrendSchema>;
+export type DailyActivityMetrics = z.infer<typeof dailyActivityMetricsSchema>;
+export type RespirationMetrics = z.infer<typeof respirationMetricsSchema>;
+export type Spo2Metrics = z.infer<typeof spo2MetricsSchema>;
 export type GarminSnapshot = z.infer<typeof garminSnapshotSchema>;
 
 /** Estado de conexión que el encabezado del chat traduce a verde / amarillo / gris. */

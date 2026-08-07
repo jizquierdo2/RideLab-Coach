@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { trainingPlanSchema } from "./plan";
 import { garminSnapshotSchema } from "./garmin";
+import { wellnessNoteSchema } from "./wellness";
 
 /**
  * Contrato del chat entre la app y el backend.
@@ -139,6 +140,13 @@ export const chatRequestSchema = z.object({
     .default([]),
   /** Historial combinado (Calendario), sólo resuelto vía tool — nunca inyectado en el prompt. */
   trainingHistory: z.array(chatTrainingHistoryEntrySchema).default([]),
+  /**
+   * Notas subjetivas recientes ("cómo me siento"), auto-reportadas por el
+   * atleta — a diferencia de `trainingHistory`, sí viajan en el prompt: son
+   * pocas y cortas, y el coach las necesita para cualquier pregunta, no sólo
+   * cuando las pide explícitamente.
+   */
+  subjectiveNotes: z.array(wellnessNoteSchema).default([]),
   activePlanId: z.string().optional(),
 });
 

@@ -1,4 +1,4 @@
-import type { GarminSnapshot } from "../types/garmin";
+import type { GarminSnapshot, HistoricalMetricsDay } from "../types/garmin";
 
 /**
  * Snapshot de demostración.
@@ -81,6 +81,19 @@ export function buildDemoSnapshot(reference = new Date()): GarminSnapshot {
     },
     vo2max: 47,
     fitnessAge: 32,
+    dailyActivity: {
+      date: today,
+      steps: 6420,
+      stepGoal: 8000,
+      floorsAscended: 9,
+      intensityMinutesModerate: 38,
+      intensityMinutesVigorous: 22,
+      intensityMinutesGoal: 150,
+    },
+    hillScore: 58,
+    enduranceScore: 5420,
+    cyclingFtpWatts: 214,
+    lactateThresholdBpm: 168,
     recentActivities: [
       {
         id: "demo-act-1",
@@ -175,4 +188,29 @@ export function buildDemoSnapshot(reference = new Date()): GarminSnapshot {
     // Métricas que este perfil demo no expone: el agente debe decirlo, no suponerlas.
     unavailableMetrics: ["SpO2 nocturno", "Frecuencia respiratoria", "Potencia por zonas"],
   };
+}
+
+/** Resumen diario demo para el rango pedido, usado por `get_historical_metrics` en modo mock. */
+export function buildDemoHistoricalMetrics(startDate: string, endDate: string): HistoricalMetricsDay[] {
+  const days: HistoricalMetricsDay[] = [];
+  const cursor = new Date(`${startDate}T00:00:00.000Z`);
+  const end = new Date(`${endDate}T00:00:00.000Z`);
+  let index = 0;
+
+  while (cursor <= end) {
+    const date = cursor.toISOString().slice(0, 10);
+    days.push({
+      date,
+      sleepScore: 68 + ((index * 7) % 20),
+      sleepDurationMinutes: 380 + ((index * 11) % 60),
+      hrvOvernightAvgMs: 38 + ((index * 3) % 12),
+      hrvStatus: index % 3 === 0 ? "balanced" : "unbalanced",
+      trainingReadinessScore: 55 + ((index * 5) % 30),
+      stressAvgLevel: 25 + ((index * 4) % 25),
+    });
+    cursor.setDate(cursor.getDate() + 1);
+    index += 1;
+  }
+
+  return days;
 }

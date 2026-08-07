@@ -5,6 +5,7 @@ export * from "./types/catalog";
 export * from "./types/chat";
 export * from "./types/training-history";
 export * from "./types/performance";
+export * from "./types/wellness";
 export * from "./catalog/exercises";
 export * from "./demo/plan";
 export * from "./demo/garmin";
