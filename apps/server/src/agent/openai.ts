@@ -6,6 +6,7 @@ import {
   COACH_BASE_INSTRUCTIONS,
   COACH_OPERATIONAL_RULES,
   fallbackGuidance,
+  looksLikePlanRequest,
   performanceGuidanceSchema,
   validateTrainingPlan,
   type ChatMessage,
@@ -130,25 +131,9 @@ export class OpenAIAgentGateway implements AgentGateway {
       }
 
       if (call.function.name === "propose_training_plan") {
-        const candidate = (args as { plan?: unknown; summary?: unknown }).plan ?? args;
-        const result = validateTrainingPlan(candidate);
-        if (!result.ok) {
-          // Un plan inválido nunca se persiste ni se muestra como si lo fuera.
-          errors.push(`El plan propuesto no pasó la validación: ${result.errors.join("; ")}`);
-          continue;
-        }
-        const unknownExercise = this.findUnknownExercise(result.plan);
-        if (unknownExercise) {
-          errors.push(`El plan referencia un ejercicio fuera del catálogo: ${unknownExercise}`);
-          continue;
-        }
-        planProposal = {
-          plan: result.plan,
-          summary:
-            typeof (args as { summary?: unknown }).summary === "string"
-              ? ((args as { summary: string }).summary)
-              : `${result.plan.durationWeeks} semanas · ${result.plan.daysPerWeek} días por semana`,
-        };
+        const built = this.buildPlanProposal(args);
+        if (built.ok) planProposal = built.planProposal;
+        else errors.push(built.error);
       }
 
       if (call.function.name === "report_metrics") {
@@ -169,12 +154,91 @@ export class OpenAIAgentGateway implements AgentGateway {
       }
     }
 
+    // Red de seguridad: el pedido de plan es inequívoco pero el modelo, con
+    // elección libre, decidió responder sólo con report_metrics — se verificó
+    // contra la API real que ni instrucciones explícitas evitan esto siempre
+    // (Garmin marcando baja disposición lo empuja a advertir en vez de
+    // entregar el plan). Una segunda vuelta con `propose_training_plan`
+    // forzada por `tool_choice` no deja margen a esa elección.
+    const lastUserMessage = [...request.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+    if (!planProposal && looksLikePlanRequest(lastUserMessage)) {
+      const forced = await this.forcePlanProposal(messages, choice);
+      if (forced.ok) planProposal = forced.planProposal;
+      else errors.push(forced.error);
+    }
+
     return {
       ...base,
       content: choice?.message?.content ?? "",
       analysis,
       planProposal,
       error: errors.length ? errors.join(" · ") : undefined,
+    };
+  }
+
+  /**
+   * Segunda vuelta con `propose_training_plan` forzado por `tool_choice`, para
+   * cuando la primera vuelta libre no lo produjo pero el pedido era
+   * inequívoco. Reutiliza el historial ya armado (incluida la respuesta
+   * anterior del modelo, si la hubo) para no perder el análisis que ya dio.
+   */
+  private async forcePlanProposal(
+    messages: OpenAI.ChatCompletionMessageParam[],
+    previousChoice: OpenAI.ChatCompletion.Choice | undefined,
+  ): Promise<{ ok: true; planProposal: NonNullable<ChatMessage["planProposal"]> } | { ok: false; error: string }> {
+    const nudgedMessages: OpenAI.ChatCompletionMessageParam[] = [...messages];
+    if (previousChoice?.message?.content) {
+      // Se registra la respuesta anterior como turno propio, no se descarta:
+      // si ya advirtió sobre la recuperación, esa nota puede pasar al `summary`.
+      nudgedMessages.push({ role: "assistant", content: previousChoice.message.content });
+    }
+    nudgedMessages.push({
+      role: "system",
+      content:
+        "El usuario pidió explícitamente que le entregues un plan. Constrúyelo ahora con `propose_training_plan`, incorporando cualquier advertencia de recuperación como ajuste dentro del plan (carga, RPE, loadGuidance) — no como motivo para no entregarlo.",
+    });
+
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: this.model,
+        messages: nudgedMessages,
+        tools: [{ type: "function", function: PROPOSE_TRAINING_PLAN_TOOL }],
+        tool_choice: { type: "function", function: { name: "propose_training_plan" } },
+      });
+      const call = completion.choices[0]?.message?.tool_calls?.[0];
+      if (call?.type !== "function" || call.function.name !== "propose_training_plan") {
+        return { ok: false, error: "El coach no pudo generar el plan pedido" };
+      }
+      const args: unknown = JSON.parse(call.function.arguments);
+      return this.buildPlanProposal(args);
+    } catch (error) {
+      console.warn("[openai] forcePlanProposal falló:", error instanceof Error ? error.message : error);
+      return { ok: false, error: "El coach no pudo generar el plan pedido" };
+    }
+  }
+
+  /** Valida los argumentos de `propose_training_plan` — un plan inválido nunca se persiste ni se muestra como si lo fuera. */
+  private buildPlanProposal(
+    args: unknown,
+  ): { ok: true; planProposal: NonNullable<ChatMessage["planProposal"]> } | { ok: false; error: string } {
+    const candidate = (args as { plan?: unknown; summary?: unknown }).plan ?? args;
+    const result = validateTrainingPlan(candidate);
+    if (!result.ok) {
+      return { ok: false, error: `El plan propuesto no pasó la validación: ${result.errors.join("; ")}` };
+    }
+    const unknownExercise = this.findUnknownExercise(result.plan);
+    if (unknownExercise) {
+      return { ok: false, error: `El plan referencia un ejercicio fuera del catálogo: ${unknownExercise}` };
+    }
+    return {
+      ok: true,
+      planProposal: {
+        plan: result.plan,
+        summary:
+          typeof (args as { summary?: unknown }).summary === "string"
+            ? (args as { summary: string }).summary
+            : `${result.plan.durationWeeks} semanas · ${result.plan.daysPerWeek} días por semana`,
+      },
     };
   }
 

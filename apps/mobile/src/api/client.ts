@@ -72,7 +72,10 @@ export class ApiError extends Error {
  * algo que era una espera larga.
  */
 const TIMEOUT_MS = {
-  chat: 150_000,
+  // Pedir un plan puede disparar una segunda vuelta al modelo si la primera no
+  // lo entregó (ver looksLikePlanRequest en el backend) — medido en 134 s en
+  // ese camino, así que 150 s quedaba corto.
+  chat: 200_000,
   default: 45_000,
 } as const;
 

@@ -172,6 +172,152 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
     expect(offeredTools.map((t) => t.function.name)).not.toContain("get_historical_metrics");
   });
 
+  it("fuerza una segunda vuelta con propose_training_plan cuando el pedido es un plan pero el modelo sólo dio report_metrics", async () => {
+    const minimalPlan = {
+      id: "plan_1",
+      title: "Plan MTB Funcional",
+      goal: "Mejorar en MTB",
+      sport: "mtb",
+      durationWeeks: 1,
+      daysPerWeek: 2,
+      sessionDurationMinutes: 60,
+      startDate: "2026-08-10",
+      generatedAt: "2026-08-07T00:00:00.000Z",
+      sourceContext: { userGoals: [], limitations: [], equipment: [] },
+      weeks: [
+        {
+          number: 1,
+          objective: "Adaptación",
+          sessions: [
+            {
+              id: "w1-d1",
+              dayLabel: "Día 1",
+              title: "Potencia de empuje",
+              focus: "Knee dominant",
+              estimatedMinutes: 60,
+              sections: [
+                {
+                  id: "sec1",
+                  title: "Potencia",
+                  order: 0,
+                  exercises: [
+                    {
+                      id: "ex1",
+                      catalogExerciseId: "box-jump",
+                      name: "Box Jump",
+                      why: "Absorción de impacto",
+                      techniqueCues: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        // Primera vuelta libre: el modelo elige sólo advertir sobre recuperación.
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "report_metrics",
+                    arguments: JSON.stringify({
+                      headline: "Baja disposición hoy",
+                      metrics: [],
+                      interpretation: "Recovery time alto",
+                      recommendation: "Empieza con cargas moderadas",
+                      unavailableMetrics: [],
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        // Segunda vuelta forzada: propose_training_plan con tool_choice.
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_2",
+                  type: "function",
+                  function: {
+                    name: "propose_training_plan",
+                    arguments: JSON.stringify({ plan: minimalPlan, summary: "4 semanas · 2 días por semana" }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const message = await gateway.reply(request([], "Hazme este plan de entrenamiento con estos ejercicios"), snapshot);
+
+    expect(create).toHaveBeenCalledTimes(2);
+    // La segunda llamada fuerza la tool: no queda a elección libre del modelo.
+    expect(create.mock.calls[1][0].tool_choice).toEqual({
+      type: "function",
+      function: { name: "propose_training_plan" },
+    });
+    expect(message.planProposal?.plan.title).toBe("Plan MTB Funcional");
+    // El análisis de la primera vuelta no se pierde.
+    expect(message.analysis?.headline).toBe("Baja disposición hoy");
+    expect(message.error).toBeUndefined();
+  });
+
+  it("no fuerza una segunda vuelta si el mensaje no pedía un plan", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "report_metrics",
+                  arguments: JSON.stringify({
+                    headline: "Recuperación al día",
+                    metrics: [],
+                    interpretation: "Todo normal",
+                    recommendation: "Sigue tu plan",
+                    unavailableMetrics: [],
+                  }),
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const message = await gateway.reply(request([], "¿Cómo está mi recuperación hoy?"), snapshot);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(message.planProposal).toBeUndefined();
+  });
+
   it("no entra en loop infinito: se detiene en MAX_TOOL_TURNS aunque el modelo insista", async () => {
     const create = vi.fn().mockResolvedValue({
       choices: [
