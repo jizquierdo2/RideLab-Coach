@@ -33,11 +33,10 @@ export default function ExerciseScreen() {
   const openVideo = async () => {
     if (!exercise.videoUrl) return;
     try {
-      const supported = await Linking.canOpenURL(exercise.videoUrl);
-      if (!supported) {
-        setVideoError("Tu dispositivo no puede abrir este enlace.");
-        return;
-      }
+      // `Linking.canOpenURL` da falsos negativos en Android 11+ para `https://`
+      // si la app no declara `<queries>` en el manifest — el link SÍ abre con
+      // `openURL` (el sistema resuelve el intent igual), así que no vale la
+      // pena precalificarlo: mejor confiar en el catch.
       await Linking.openURL(exercise.videoUrl);
     } catch {
       setVideoError("No se pudo abrir el video.");
