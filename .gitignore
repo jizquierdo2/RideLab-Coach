@@ -6,3 +6,10 @@ dist/
 *.log
 /tmp/
 .DS_Store
+
+# Base SQLite local de memoria conversacional (apps/server/src/memory)
+apps/server/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

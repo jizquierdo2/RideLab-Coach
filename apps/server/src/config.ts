@@ -54,6 +54,23 @@ export const config = {
 
   /** Endpoint de un agente ya desplegado, si existe. Alternativa al par OpenAI + MCP. */
   agentEndpoint: process.env.AGENT_ENDPOINT ?? "",
+
+  /**
+   * Memoria conversacional persistente.
+   *
+   * `databasePath` debe apuntar a un volumen persistente en producción (en
+   * Railway: crear un volumen y montarlo, luego apuntar `MEMORY_DB_PATH` a esa
+   * ruta) — sin eso, la base SQLite se pierde en cada redeploy. Sin
+   * `MEMORY_ENCRYPTION_KEY` el arranque no falla (para no romper `bin/setup`
+   * en desarrollo), pero el módulo de memoria rechaza cifrar/descifrar hasta
+   * que se configure.
+   */
+  memory: {
+    databasePath: process.env.MEMORY_DB_PATH ?? "./data/memory.db",
+    encryptionKey: process.env.MEMORY_ENCRYPTION_KEY ?? "",
+    /** Ventana de contexto activo — el resto del historial sigue guardado, sólo no se inyecta en cada turno. */
+    activeWindowDays: 7,
+  },
 } as const;
 
 export type AppConfig = typeof config;
