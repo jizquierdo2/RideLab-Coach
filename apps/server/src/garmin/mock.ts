@@ -1,8 +1,10 @@
 import {
+  buildDemoActivityTimeSeries,
   buildDemoHistoricalMetrics,
   buildDemoPerformanceSnapshotSolid,
   buildDemoSnapshot,
   buildDemoTrainingHistory,
+  type ActivityTimeSeries,
   type GarminActivity,
   type GarminSnapshot,
   type HistoricalMetricsDay,
@@ -53,5 +55,18 @@ export class MockGarminDataProvider implements GarminDataProvider {
     endDate: string;
   }): Promise<HistoricalMetricsDay[]> {
     return buildDemoHistoricalMetrics(startDate, endDate);
+  }
+
+  /**
+   * Sólo tiene muestras sintéticas para la actividad demo
+   * (`demo-act-cardio-w1-d1`) — cualquier otro id devuelve una serie vacía en
+   * vez de inventar datos que no corresponden a esa actividad.
+   */
+  async getActivityDetails(activityId: string): Promise<ActivityTimeSeries> {
+    const demo = buildDemoActivityTimeSeries();
+    if (activityId !== demo.activityId) {
+      return { activityId, source: "mock", samples: [], availableMetrics: [] };
+    }
+    return demo;
   }
 }

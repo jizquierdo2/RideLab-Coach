@@ -97,6 +97,31 @@ app.get("/api/garmin/activities", async (req, res) => {
 });
 
 /**
+ * Serie temporal de FC de una actividad puntual, para cruzarla contra los
+ * intervalos reales de cada ejercicio (Rendimiento por sesión). La app sólo
+ * la pide para actividades ya confirmadas como vinculadas a una sesión — el
+ * backend no conoce el concepto de "match" (vive sólo en el móvil), así que
+ * no hay nada que validar acá aparte del id.
+ */
+app.get("/api/garmin/activity-details/:activityId", async (req, res) => {
+  const { activityId } = req.params;
+  if (!activityId) {
+    res.status(400).json({ error: "activityId es obligatorio" });
+    return;
+  }
+
+  try {
+    const timeSeries = await garminProvider.getActivityDetails(activityId);
+    res.json(timeSeries);
+  } catch (error) {
+    res.status(502).json({
+      error: "No se pudo obtener el detalle de la actividad",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+/**
  * Snapshot + assessment + guidance para la sección Estado, en una sola vuelta.
  * El error de una parte no descarta lo que sí funcionó: si `getPerformanceSnapshot`
  * falla, no hay nada que evaluar y se responde 502; si el snapshot llega pero

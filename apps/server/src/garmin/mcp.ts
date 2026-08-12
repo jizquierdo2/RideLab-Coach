@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
   mapGarminSnapshotToPerformanceSnapshot,
+  type ActivityTimeSeries,
   type GarminActivity,
   type GarminSnapshot,
   type HistoricalMetricsDay,
@@ -467,6 +468,63 @@ export class McpGarminDataProvider implements GarminDataProvider {
         const day = activity.startedAt.slice(0, 10);
         return day >= startDate && day <= endDate;
       });
+  }
+
+  /**
+   * Serie temporal de frecuencia cardíaca de una actividad puntual.
+   *
+   * Verificado contra la cuenta real: `get_activity_details` devuelve
+   * `metricDescriptors` (una lista `{metricsIndex, key}` que dice en qué
+   * posición del array `metrics` de cada muestra vive cada campo — el orden
+   * de esa lista NO coincide con el de las posiciones, hay que resolverlo por
+   * `metricsIndex`) y `activityDetailMetrics: [{metrics: number[]}, ...]`.
+   * Las claves reales son `directTimestamp` (epoch en milisegundos) y
+   * `directHeartRate` (bpm). Sólo se extraen esas dos — nunca se reparte el
+   * Training Effect ni las calorías de la actividad completa entre ejercicios,
+   * y si el MCP no trae `directHeartRate` la muestra queda sin frecuencia
+   * cardíaca en vez de inventarla.
+   */
+  async getActivityDetails(activityId: string): Promise<ActivityTimeSeries> {
+    const raw = await this.callTool<{
+      metricDescriptors?: Array<{ metricsIndex: number; key: string }>;
+      activityDetailMetrics?: Array<{ metrics: number[] }>;
+    }>("get_activity_details", { activityId: Number(activityId) });
+
+    const descriptors = raw?.metricDescriptors ?? [];
+    const entries = raw?.activityDetailMetrics ?? [];
+    const timestampIndex = descriptors.find((d) => d.key === "directTimestamp")?.metricsIndex;
+    const heartRateIndex = descriptors.find((d) => d.key === "directHeartRate")?.metricsIndex;
+
+    if (timestampIndex === undefined || !Array.isArray(entries) || entries.length === 0) {
+      return { activityId, source: "garmin", samples: [], availableMetrics: [] };
+    }
+
+    const samples = entries
+      .map((entry) => {
+        const rawTimestamp = entry.metrics[timestampIndex];
+        if (typeof rawTimestamp !== "number") return undefined;
+        const heartRate = heartRateIndex !== undefined ? entry.metrics[heartRateIndex] : undefined;
+        return {
+          timestamp: new Date(rawTimestamp).toISOString(),
+          heartRate: typeof heartRate === "number" ? heartRate : undefined,
+        };
+      })
+      .filter((sample): sample is { timestamp: string; heartRate: number | undefined } => sample !== undefined);
+
+    let sampleIntervalSeconds: number | undefined;
+    if (samples.length > 1) {
+      const first = new Date(samples[0]!.timestamp).getTime();
+      const last = new Date(samples[samples.length - 1]!.timestamp).getTime();
+      sampleIntervalSeconds = (last - first) / 1000 / (samples.length - 1);
+    }
+
+    return {
+      activityId,
+      source: "garmin",
+      sampleIntervalSeconds,
+      samples,
+      availableMetrics: heartRateIndex !== undefined ? ["heartRate"] : [],
+    };
   }
 
   /**

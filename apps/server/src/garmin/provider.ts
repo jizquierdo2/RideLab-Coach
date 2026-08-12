@@ -1,4 +1,10 @@
-import type { GarminActivity, GarminSnapshot, HistoricalMetricsDay, PerformanceSnapshot } from "@ridelab/shared";
+import type {
+  ActivityTimeSeries,
+  GarminActivity,
+  GarminSnapshot,
+  HistoricalMetricsDay,
+  PerformanceSnapshot,
+} from "@ridelab/shared";
 
 /**
  * Contrato para obtener métricas de Garmin.
@@ -32,6 +38,15 @@ export interface GarminDataProvider {
    * las lecturas crudas de alta frecuencia.
    */
   getHistoricalMetrics(params: { startDate: string; endDate: string }): Promise<HistoricalMetricsDay[]>;
+
+  /**
+   * Serie temporal de una actividad puntual (frecuencia cardíaca con
+   * timestamp), para cruzar contra los intervalos reales de cada ejercicio.
+   * A diferencia de `getSnapshot()`/`getHistoricalMetrics()`, esto SÍ trae
+   * lecturas de alta frecuencia — sólo se pide para una actividad ya
+   * confirmada como vinculada a una sesión, nunca en bloque.
+   */
+  getActivityDetails(activityId: string): Promise<ActivityTimeSeries>;
 }
 
 /**
@@ -57,6 +72,7 @@ export const GARMIN_READ_ONLY_TOOLS = [
   "get_activities",
   "get_activity",
   "get_activity_hr_zones",
+  "get_activity_details",
   "get_sleep_data_range",
   "get_hrv_range",
   "get_stress_range",
