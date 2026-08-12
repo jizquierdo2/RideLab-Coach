@@ -95,7 +95,7 @@ export function SessionLogForm({
 }
 
 /** Escala táctil de 0-10 / 1-10, cómoda con el pulgar. */
-function Scale({
+export function Scale({
   value,
   min,
   max,

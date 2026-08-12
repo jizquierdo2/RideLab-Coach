@@ -1,23 +1,33 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   activitySessionMatchSchema,
+  completeExercise,
+  exerciseExecutionEventSchema,
+  exerciseExecutionSchema,
   garminActivitySchema,
   performanceResponseSchema,
   plannedSessionOccurrenceSchema,
+  revertCompletion,
   sessionExecutionSchema,
   sessionLogSchema,
+  skipExercise,
+  startExercise,
   trainingPlanSchema,
   athleteProfileSchema,
   validateTrainingPlan,
   wellnessNoteSchema,
   type ActivitySessionMatch,
   type AthleteProfile,
+  type ExerciseExecution,
+  type ExerciseExecutionEvent,
+  type ExerciseExecutionTransition,
   type GarminActivity,
   type PerformanceResponse,
   type PlannedSessionOccurrence,
   type SessionExecution,
   type SessionLog,
   type SessionStatus,
+  type TrainingExercise,
   type TrainingPlan,
   type WellnessNote,
 } from "@ridelab/shared";
@@ -42,6 +52,8 @@ const KEYS = {
   performance: "ridelab:performance",
   occurrences: "ridelab:occurrences",
   wellnessNotes: "ridelab:wellnessNotes",
+  exerciseExecutions: "ridelab:exerciseExecutions",
+  exerciseExecutionEvents: "ridelab:exerciseExecutionEvents",
 } as const;
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
@@ -286,6 +298,149 @@ export const sessionExecutionRepository = {
       status: "planned",
       sourceOccurrenceId: sourceExecutionId,
     });
+  },
+};
+
+/**
+ * Log de trazabilidad de `exerciseExecutionRepository`: de sólo-escritura por
+ * transición, nunca se edita ni se borra un evento existente — sólo se lee
+ * para mostrar historial (p. ej. que un "completado" fue deshecho después).
+ */
+export const exerciseExecutionEventRepository = {
+  async list(): Promise<ExerciseExecutionEvent[]> {
+    const raw = await readJson<unknown[]>(KEYS.exerciseExecutionEvents, []);
+    return raw
+      .map((item) => exerciseExecutionEventSchema.safeParse(item))
+      .filter((result): result is { success: true; data: ExerciseExecutionEvent } => result.success)
+      .map((result) => result.data);
+  },
+
+  async append(event: ExerciseExecutionEvent): Promise<ExerciseExecutionEvent> {
+    const parsed = exerciseExecutionEventSchema.parse(event);
+    const events = await exerciseExecutionEventRepository.list();
+    await writeJson(KEYS.exerciseExecutionEvents, [...events, parsed]);
+    return parsed;
+  },
+
+  async forExecution(exerciseExecutionId: string): Promise<ExerciseExecutionEvent[]> {
+    return (await exerciseExecutionEventRepository.list())
+      .filter((event) => event.exerciseExecutionId === exerciseExecutionId)
+      .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+  },
+};
+
+/**
+ * Ejecución real de cada ejercicio dentro de una sesión: cuándo se inició y
+ * cuándo se completó, capturado en el handler del clic (la hora se toma acá,
+ * antes de cualquier `await`, no en el render ni al sincronizar). Cada
+ * transición de estado agrega también su evento correspondiente en
+ * `exerciseExecutionEventRepository`, en la misma llamada, para que estado y
+ * trazabilidad queden atómicos.
+ */
+export const exerciseExecutionRepository = {
+  async list(): Promise<ExerciseExecution[]> {
+    const raw = await readJson<unknown[]>(KEYS.exerciseExecutions, []);
+    return raw
+      .map((item) => exerciseExecutionSchema.safeParse(item))
+      .filter((result): result is { success: true; data: ExerciseExecution } => result.success)
+      .map((result) => result.data);
+  },
+
+  async forSessionExecution(sessionExecutionId: string): Promise<ExerciseExecution[]> {
+    return (await exerciseExecutionRepository.list())
+      .filter((execution) => execution.sessionExecutionId === sessionExecutionId)
+      .sort((a, b) => a.order - b.order);
+  },
+
+  /**
+   * Crea las filas `pending` para cada ejercicio de la plantilla la primera
+   * vez que se necesitan. Idempotente: si ya existen ejecuciones para esta
+   * `sessionExecutionId`, las devuelve tal cual en vez de duplicarlas.
+   */
+  async seedForSession(
+    sessionExecutionId: string,
+    exercises: TrainingExercise[],
+  ): Promise<ExerciseExecution[]> {
+    const existing = await exerciseExecutionRepository.forSessionExecution(sessionExecutionId);
+    if (existing.length > 0) return existing;
+
+    const now = new Date().toISOString();
+    const seeded: ExerciseExecution[] = exercises.map((exercise, index) => ({
+      id: uniqueId(`exexec_${sessionExecutionId}`),
+      sessionExecutionId,
+      trainingExerciseId: exercise.id,
+      catalogExerciseId: exercise.catalogExerciseId,
+      order: index,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    }));
+
+    const all = await exerciseExecutionRepository.list();
+    await writeJson(KEYS.exerciseExecutions, [...all, ...seeded]);
+    return seeded;
+  },
+
+  async applyTransition(
+    id: string,
+    transition: (
+      execution: ExerciseExecution,
+      params: { occurredAt: string; eventId: string },
+    ) => ExerciseExecutionTransition,
+  ): Promise<ExerciseExecution> {
+    const executions = await exerciseExecutionRepository.list();
+    const current = executions.find((execution) => execution.id === id);
+    if (!current) throw new Error(`No existe la ejecución de ejercicio "${id}"`);
+
+    // Se captura acá, como primera instrucción, sin ningún `await` previo —
+    // es equivalente a tomarla en el handler del clic.
+    const occurredAt = new Date().toISOString();
+    const { execution, event } = transition(current, { occurredAt, eventId: uniqueId(`exevt_${id}`) });
+
+    await writeJson(
+      KEYS.exerciseExecutions,
+      [...executions.filter((item) => item.id !== id), execution],
+    );
+    await exerciseExecutionEventRepository.append(event);
+    return execution;
+  },
+
+  async start(id: string): Promise<ExerciseExecution> {
+    return exerciseExecutionRepository.applyTransition(id, startExercise);
+  },
+
+  async complete(id: string, rpe?: number): Promise<ExerciseExecution> {
+    return exerciseExecutionRepository.applyTransition(id, (execution, params) =>
+      completeExercise(execution, { ...params, rpe }),
+    );
+  },
+
+  async revert(id: string): Promise<ExerciseExecution> {
+    return exerciseExecutionRepository.applyTransition(id, revertCompletion);
+  },
+
+  async skip(id: string): Promise<ExerciseExecution> {
+    return exerciseExecutionRepository.applyTransition(id, skipExercise);
+  },
+
+  /**
+   * Guarda el esfuerzo percibido sobre un ejercicio ya completado. No es una
+   * transición de estado (no genera `ExerciseExecutionEvent`): es un dato
+   * complementario que llega como interacción no bloqueante después de
+   * "Completar", igual que `sessionExecutionRepository.finish()` acepta un
+   * RPE de sesión sin un sistema de eventos propio.
+   */
+  async setRpe(id: string, rpe: number): Promise<ExerciseExecution> {
+    const executions = await exerciseExecutionRepository.list();
+    const current = executions.find((execution) => execution.id === id);
+    if (!current) throw new Error(`No existe la ejecución de ejercicio "${id}"`);
+
+    const updated: ExerciseExecution = { ...current, rpe, updatedAt: new Date().toISOString() };
+    await writeJson(
+      KEYS.exerciseExecutions,
+      [...executions.filter((item) => item.id !== id), updated],
+    );
+    return updated;
   },
 };
 

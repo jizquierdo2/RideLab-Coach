@@ -9,6 +9,7 @@ import {
   type ActivitySessionMatch,
   type AthleteProfile,
   type ChatMessage,
+  type ExerciseExecution,
   type GarminActivity,
   type GarminStatus,
   type PerformanceResponse,
@@ -16,6 +17,7 @@ import {
   type SessionExecution,
   type SessionLog,
   type SessionStatus,
+  type TrainingExercise,
   type TrainingPlan,
   type WellnessNote,
 } from "@ridelab/shared";
@@ -24,6 +26,7 @@ import { buildChatTrainingHistoryEntries } from "../lib/calendar";
 import {
   activitySessionMatchRepository,
   calendarDemoSeedRepository,
+  exerciseExecutionRepository,
   garminActivityRepository,
   performanceRepository,
   planRepository,
@@ -62,6 +65,8 @@ interface AppState {
   logs: SessionLog[];
   executions: SessionExecution[];
   occurrences: PlannedSessionOccurrence[];
+  /** Ejecución real de cada ejercicio (todas las sesiones) — filtrar por `sessionExecutionId` en la UI. */
+  exerciseExecutions: ExerciseExecution[];
   /** Id de la ejecución para la que `session/[id]` debe precargar cargas de la última vez; `undefined` si no aplica. */
   pendingLoadsPrefillExecutionId: string | undefined;
   activities: GarminActivity[];
@@ -113,6 +118,21 @@ interface AppActions {
   ) => Promise<PlannedSessionOccurrence>;
   /** Limpia `pendingLoadsPrefillExecutionId` una vez que la pantalla de sesión ya aplicó la precarga. */
   clearLoadsPrefill: () => void;
+  /** Crea las filas `pending` por ejercicio la primera vez que se necesitan (idempotente). */
+  ensureExerciseExecutions: (
+    sessionExecutionId: string,
+    exercises: TrainingExercise[],
+  ) => Promise<ExerciseExecution[]>;
+  /** Registra el inicio de un ejercicio — la hora se captura en la primera línea, antes de cualquier `await`. */
+  startExerciseExecution: (exerciseExecutionId: string) => Promise<ExerciseExecution>;
+  /** Registra el término de un ejercicio, con RPE opcional. */
+  completeExerciseExecution: (exerciseExecutionId: string, rpe?: number) => Promise<ExerciseExecution>;
+  /** Deshace un "completado" accidental, volviendo el ejercicio a `active`. */
+  revertExerciseCompletion: (exerciseExecutionId: string) => Promise<ExerciseExecution>;
+  /** Omite un ejercicio pendiente o activo. */
+  skipExerciseExecution: (exerciseExecutionId: string) => Promise<ExerciseExecution>;
+  /** Guarda el esfuerzo percibido de un ejercicio ya completado — interacción no bloqueante, "Omitir" no llama esto. */
+  setExerciseExecutionRpe: (exerciseExecutionId: string, rpe: number) => Promise<ExerciseExecution>;
   /** Trae actividades del backend, las persiste (idempotente) y corre el matcher. */
   syncGarminActivities: () => Promise<void>;
   confirmMatch: (
@@ -147,6 +167,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [logs, setLogs] = useState<SessionLog[]>([]);
   const [executions, setExecutions] = useState<SessionExecution[]>([]);
   const [occurrences, setOccurrences] = useState<PlannedSessionOccurrence[]>([]);
+  const [exerciseExecutions, setExerciseExecutions] = useState<ExerciseExecution[]>([]);
   const [pendingLoadsPrefillExecutionId, setPendingLoadsPrefillExecutionId] = useState<string | undefined>();
   const [activities, setActivities] = useState<GarminActivity[]>([]);
   const [matches, setMatches] = useState<ActivitySessionMatch[]>([]);
@@ -184,6 +205,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         storedProfile,
         storedPerformance,
         storedWellnessNotes,
+        storedExerciseExecutions,
       ] = await Promise.all([
         planRepository.list(),
         planRepository.getActiveId(),
@@ -196,6 +218,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         profileRepository.get(),
         performanceRepository.get(),
         wellnessNoteRepository.list(),
+        exerciseExecutionRepository.list(),
       ]);
 
       setPlans(storedPlans);
@@ -208,6 +231,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setMatches(storedMatches);
       setProfile(storedProfile);
       setWellnessNotes(storedWellnessNotes);
+      setExerciseExecutions(storedExerciseExecutions);
       if (storedPerformance) {
         setPerformanceResponse(storedPerformance.response);
         setPerformanceUpdatedAt(storedPerformance.updatedAt);
@@ -359,6 +383,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [],
   );
+
+  const ensureExerciseExecutions = useCallback(
+    async (sessionExecutionId: string, exercises: TrainingExercise[]) => {
+      const seeded = await exerciseExecutionRepository.seedForSession(sessionExecutionId, exercises);
+      setExerciseExecutions(await exerciseExecutionRepository.list());
+      return seeded;
+    },
+    [],
+  );
+
+  const startExerciseExecution = useCallback(async (exerciseExecutionId: string) => {
+    const execution = await exerciseExecutionRepository.start(exerciseExecutionId);
+    setExerciseExecutions(await exerciseExecutionRepository.list());
+    return execution;
+  }, []);
+
+  const completeExerciseExecution = useCallback(async (exerciseExecutionId: string, rpe?: number) => {
+    const execution = await exerciseExecutionRepository.complete(exerciseExecutionId, rpe);
+    setExerciseExecutions(await exerciseExecutionRepository.list());
+    return execution;
+  }, []);
+
+  const revertExerciseCompletion = useCallback(async (exerciseExecutionId: string) => {
+    const execution = await exerciseExecutionRepository.revert(exerciseExecutionId);
+    setExerciseExecutions(await exerciseExecutionRepository.list());
+    return execution;
+  }, []);
+
+  const skipExerciseExecution = useCallback(async (exerciseExecutionId: string) => {
+    const execution = await exerciseExecutionRepository.skip(exerciseExecutionId);
+    setExerciseExecutions(await exerciseExecutionRepository.list());
+    return execution;
+  }, []);
+
+  const setExerciseExecutionRpe = useCallback(async (exerciseExecutionId: string, rpe: number) => {
+    const execution = await exerciseExecutionRepository.setRpe(exerciseExecutionId, rpe);
+    setExerciseExecutions(await exerciseExecutionRepository.list());
+    return execution;
+  }, []);
 
   const repeatSessionNow = useCallback(async (templateId: string, sourceExecutionId: string, useLastLoads: boolean) => {
     const execution = await sessionExecutionRepository.repeatNow(templateId, sourceExecutionId);
@@ -569,6 +632,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       logs,
       executions,
       occurrences,
+      exerciseExecutions,
       pendingLoadsPrefillExecutionId,
       activities,
       matches,
@@ -593,6 +657,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       saveLog,
       startSession,
       finishSessionExecution,
+      ensureExerciseExecutions,
+      startExerciseExecution,
+      completeExerciseExecution,
+      revertExerciseCompletion,
+      skipExerciseExecution,
+      setExerciseExecutionRpe,
       repeatSessionNow,
       repeatSessionSchedule,
       clearLoadsPrefill,
@@ -614,6 +684,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       logs,
       executions,
       occurrences,
+      exerciseExecutions,
       pendingLoadsPrefillExecutionId,
       activities,
       matches,
@@ -638,6 +709,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       saveLog,
       startSession,
       finishSessionExecution,
+      ensureExerciseExecutions,
+      startExerciseExecution,
+      completeExerciseExecution,
+      revertExerciseCompletion,
+      skipExerciseExecution,
+      setExerciseExecutionRpe,
       repeatSessionNow,
       repeatSessionSchedule,
       clearLoadsPrefill,

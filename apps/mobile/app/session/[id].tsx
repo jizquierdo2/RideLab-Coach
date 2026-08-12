@@ -4,16 +4,19 @@ import { useLocalSearchParams, useRouter, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   DEMO_NOTICE,
+  findActiveExecution,
   findExercise,
   formatSantiagoDayLabel,
+  nextPendingExercise,
   VIDEO_PENDING_LABEL,
+  type ExerciseExecution,
   type ExerciseLog,
   type SessionLog,
   type TrainingExercise,
 } from "@ridelab/shared";
 import { useApp } from "../../src/state/AppContext";
 import { KeyboardAwareScreen } from "../../src/components/keyboard";
-import { SessionLogForm, type SessionLogValues } from "../../src/components/session-log-form";
+import { Scale, SessionLogForm, type SessionLogValues } from "../../src/components/session-log-form";
 import { Badge, Button, EmptyState, Loading, Notice, SectionHeader } from "../../src/components/ui";
 import { Icon, type IconRole } from "../../src/components/icon";
 import { repeatedFromLabel } from "../../src/lib/calendar";
@@ -41,6 +44,13 @@ export default function SessionScreen() {
     pendingLoadsPrefillExecutionId,
     clearLoadsPrefill,
     performanceResponse,
+    exerciseExecutions,
+    ensureExerciseExecutions,
+    startExerciseExecution,
+    completeExerciseExecution,
+    revertExerciseCompletion,
+    skipExerciseExecution,
+    setExerciseExecutionRpe,
   } = useApp();
 
   const found = useMemo(
@@ -70,7 +80,97 @@ export default function SessionScreen() {
     }
   }, [id, startSession]);
 
-  const [completed, setCompleted] = useState<Record<string, boolean>>({});
+  /** Ejecuciones por ejercicio de esta sesión, en el orden de la plantilla. */
+  const sessionExerciseExecutions = useMemo(
+    () =>
+      execution
+        ? exerciseExecutions
+            .filter((item) => item.sessionExecutionId === execution.id)
+            .sort((a, b) => a.order - b.order)
+        : [],
+    [exerciseExecutions, execution],
+  );
+
+  const execByTrainingExerciseId = useMemo(
+    () => new Map(sessionExerciseExecutions.map((item) => [item.trainingExerciseId, item])),
+    [sessionExerciseExecutions],
+  );
+
+  const activeExerciseExecution = useMemo(
+    () => findActiveExecution(sessionExerciseExecutions),
+    [sessionExerciseExecutions],
+  );
+
+  const nextPending = useMemo(
+    () => nextPendingExercise(sessionExerciseExecutions),
+    [sessionExerciseExecutions],
+  );
+
+  // Crea las filas `pending` por ejercicio la primera vez que la sesión tiene
+  // una ejecución — idempotente, así que reintentarlo en cada render no duplica nada.
+  useEffect(() => {
+    if (!execution || !found) return;
+    const flatExercises = found.session.sections.flatMap((section) => section.exercises);
+    void ensureExerciseExecutions(execution.id, flatExercises);
+  }, [execution, found, ensureExerciseExecutions]);
+
+  const [rpePromptFor, setRpePromptFor] = useState<string | undefined>();
+
+  const handleStartExercise = useCallback(
+    (exerciseExecutionId: string) => {
+      if (activeExerciseExecution && activeExerciseExecution.id !== exerciseExecutionId) {
+        const previous = activeExerciseExecution;
+        Alert.alert(
+          "Ya tienes un ejercicio en curso",
+          "¿Qué quieres hacer con el anterior antes de iniciar este?",
+          [
+            { text: "Cancelar", style: "cancel" },
+            {
+              text: "Omitir anterior",
+              onPress: () => void skipExerciseExecution(previous.id).then(() => startExerciseExecution(exerciseExecutionId)),
+            },
+            {
+              text: "Completar anterior",
+              onPress: () =>
+                void completeExerciseExecution(previous.id).then(() => startExerciseExecution(exerciseExecutionId)),
+            },
+          ],
+        );
+        return;
+      }
+      void startExerciseExecution(exerciseExecutionId);
+    },
+    [activeExerciseExecution, skipExerciseExecution, completeExerciseExecution, startExerciseExecution],
+  );
+
+  const handleCompleteExercise = useCallback(
+    (exerciseExecutionId: string) => {
+      void completeExerciseExecution(exerciseExecutionId).then(() => setRpePromptFor(exerciseExecutionId));
+    },
+    [completeExerciseExecution],
+  );
+
+  const handleSetExerciseRpe = useCallback(
+    (exerciseExecutionId: string, rpe: number) => {
+      void setExerciseExecutionRpe(exerciseExecutionId, rpe).then(() => setRpePromptFor(undefined));
+    },
+    [setExerciseExecutionRpe],
+  );
+
+  const handleUndoExercise = useCallback(
+    (exerciseExecutionId: string) => {
+      Alert.alert("¿Deshacer este ejercicio?", "Volverá a quedar en curso.", [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Deshacer",
+          style: "destructive",
+          onPress: () => void revertExerciseCompletion(exerciseExecutionId),
+        },
+      ]);
+    },
+    [revertExerciseCompletion],
+  );
+
   const [loads, setLoads] = useState<Record<string, string>>({});
   const [reps, setReps] = useState<Record<string, string>>({});
   const [showLogForm, setShowLogForm] = useState(false);
@@ -156,7 +256,7 @@ export default function SessionScreen() {
         exerciseId: exercise.id,
         catalogExerciseId: exercise.catalogExerciseId,
         name: exercise.name,
-        completed: completed[exercise.id] ?? false,
+        completed: execByTrainingExerciseId.get(exercise.id)?.status === "completed",
         load: loads[exercise.id]?.trim() || undefined,
         actualReps: reps[exercise.id]?.trim() || undefined,
       })),
@@ -189,7 +289,7 @@ export default function SessionScreen() {
     } finally {
       setSaving(false);
     }
-  }, [found, activePlan, completed, loads, reps, saveLog, finishSessionExecution, router]);
+  }, [found, activePlan, execByTrainingExerciseId, loads, reps, saveLog, finishSessionExecution, router]);
 
   if (!ready) return <Loading />;
 
@@ -207,7 +307,7 @@ export default function SessionScreen() {
   const { session } = found;
   const status = sessionStatus[session.id] ?? "pending";
   const totalExercises = countExercises(session);
-  const doneCount = Object.values(completed).filter(Boolean).length;
+  const doneCount = sessionExerciseExecutions.filter((item) => item.status === "completed").length;
 
   return (
     <KeyboardAwareScreen>
@@ -349,13 +449,29 @@ export default function SessionScreen() {
                 <ExerciseCard
                   key={exercise.id}
                   exercise={exercise}
-                  checked={completed[exercise.id] ?? false}
+                  execution={execByTrainingExerciseId.get(exercise.id)}
+                  highlighted={nextPending?.trainingExerciseId === exercise.id}
+                  showRpePrompt={rpePromptFor === execByTrainingExerciseId.get(exercise.id)?.id}
                   load={loads[exercise.id] ?? ""}
                   reps={reps[exercise.id] ?? ""}
                   showInputs={showLogForm}
-                  onToggle={() =>
-                    setCompleted((current) => ({ ...current, [exercise.id]: !current[exercise.id] }))
-                  }
+                  onStart={() => {
+                    const exec = execByTrainingExerciseId.get(exercise.id);
+                    if (exec) handleStartExercise(exec.id);
+                  }}
+                  onComplete={() => {
+                    const exec = execByTrainingExerciseId.get(exercise.id);
+                    if (exec) handleCompleteExercise(exec.id);
+                  }}
+                  onUndo={() => {
+                    const exec = execByTrainingExerciseId.get(exercise.id);
+                    if (exec) handleUndoExercise(exec.id);
+                  }}
+                  onSetRpe={(rpe) => {
+                    const exec = execByTrainingExerciseId.get(exercise.id);
+                    if (exec) handleSetExerciseRpe(exec.id, rpe);
+                  }}
+                  onDismissRpePrompt={() => setRpePromptFor(undefined)}
                   onLoadChange={(value) => setLoads((current) => ({ ...current, [exercise.id]: value }))}
                   onRepsChange={(value) => setReps((current) => ({ ...current, [exercise.id]: value }))}
                   onOpenTechnique={() => router.push(`/exercise/${exercise.catalogExerciseId}`)}
@@ -384,24 +500,43 @@ export default function SessionScreen() {
   );
 }
 
-/** Tarjeta de ejercicio con miniatura, prescripción, cues y acciones. */
+/** Hora local (America/Santiago) en formato HH:MM, para "Iniciado a las…"/"Completado a las…". */
+function formatSantiagoTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Tarjeta de ejercicio con miniatura, prescripción, cues y control de tiempo real. */
 function ExerciseCard({
   exercise,
-  checked,
+  execution,
+  highlighted,
+  showRpePrompt,
   load,
   reps,
   showInputs,
-  onToggle,
+  onStart,
+  onComplete,
+  onUndo,
+  onSetRpe,
+  onDismissRpePrompt,
   onLoadChange,
   onRepsChange,
   onOpenTechnique,
 }: {
   exercise: TrainingExercise;
-  checked: boolean;
+  /** `undefined` mientras la sesión no se ha iniciado — todavía no hay filas sembradas. */
+  execution: ExerciseExecution | undefined;
+  /** Es el próximo pendiente por orden — se destaca visualmente, nunca se auto-inicia. */
+  highlighted: boolean;
+  showRpePrompt: boolean;
   load: string;
   reps: string;
   showInputs: boolean;
-  onToggle: () => void;
+  onStart: () => void;
+  onComplete: () => void;
+  onUndo: () => void;
+  onSetRpe: (rpe: number) => void;
+  onDismissRpePrompt: () => void;
   onLoadChange: (value: string) => void;
   onRepsChange: (value: string) => void;
   onOpenTechnique: () => void;
@@ -427,7 +562,7 @@ function ExerciseCard({
   ].filter(Boolean);
 
   return (
-    <View style={styles.exerciseCard}>
+    <View style={[styles.exerciseCard, highlighted && styles.exerciseCardHighlighted]}>
       <View style={styles.exerciseTop}>
         {thumbnail ? (
           <Image source={{ uri: thumbnail }} style={styles.thumb} resizeMode="cover" />
@@ -474,26 +609,111 @@ function ExerciseCard({
         </View>
       ) : null}
 
-      <View style={styles.exerciseActions}>
-        <Pressable
-          accessibilityRole="checkbox"
-          accessibilityState={{ checked }}
-          onPress={onToggle}
-          style={styles.checkboxRow}
-        >
-          <Icon
-            role={checked ? "checkCircleFilled" : "checkCircleOutline"}
-            size={22}
-            color={checked ? colors.primary : colors.outlineVariant}
-          />
-          <Text style={styles.checkboxLabel}>Completado</Text>
-        </Pressable>
+      <ExerciseTimingControl
+        execution={execution}
+        showRpePrompt={showRpePrompt}
+        onStart={onStart}
+        onComplete={onComplete}
+        onUndo={onUndo}
+        onSetRpe={onSetRpe}
+        onDismissRpePrompt={onDismissRpePrompt}
+      />
 
+      <View style={styles.exerciseActions}>
         <Pressable accessibilityRole="button" onPress={onOpenTechnique} style={styles.techniqueButton}>
           <Icon role="playCircle" size={16} color={colors.accent} />
           <Text style={styles.techniqueText}>{hasVideo ? "Ver técnica" : VIDEO_PENDING_LABEL}</Text>
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+/**
+ * Controla el estado real de un ejercicio: pending → active → completed | skipped.
+ * `execution` es `undefined` sólo mientras la sesión completa no se ha
+ * iniciado — en ese caso no se muestra ningún control todavía.
+ */
+function ExerciseTimingControl({
+  execution,
+  showRpePrompt,
+  onStart,
+  onComplete,
+  onUndo,
+  onSetRpe,
+  onDismissRpePrompt,
+}: {
+  execution: ExerciseExecution | undefined;
+  showRpePrompt: boolean;
+  onStart: () => void;
+  onComplete: () => void;
+  onUndo: () => void;
+  onSetRpe: (rpe: number) => void;
+  onDismissRpePrompt: () => void;
+}) {
+  if (!execution) return null;
+
+  if (execution.status === "skipped") {
+    return (
+      <View style={styles.timingRow}>
+        <Icon role="cancel" size={16} color={colors.textFaint} />
+        <Text style={styles.timingSkipped}>Omitido</Text>
+      </View>
+    );
+  }
+
+  if (execution.status === "pending") {
+    return (
+      <Pressable accessibilityRole="button" onPress={onStart} style={styles.startExerciseButton}>
+        <Icon role="playCircle" size={16} color={colors.onPrimary} />
+        <Text style={styles.startExerciseButtonText}>Iniciar ejercicio</Text>
+      </Pressable>
+    );
+  }
+
+  if (execution.status === "active") {
+    return (
+      <View style={styles.timingActiveBlock}>
+        <View style={styles.timingRow}>
+          <View style={styles.timingActiveDot} />
+          <Text style={styles.timingActiveLabel}>
+            En curso · Iniciado a las {formatSantiagoTime(execution.startedAt!)}
+          </Text>
+        </View>
+        <Pressable accessibilityRole="button" onPress={onComplete} style={styles.completeExerciseButton}>
+          <Icon role="checkCircleFilled" size={16} color={colors.onPrimary} />
+          <Text style={styles.completeExerciseButtonText}>Completar</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  // completed
+  return (
+    <View style={styles.timingCompletedBlock}>
+      <View style={styles.timingRow}>
+        <Icon role="checkCircleFilled" size={16} color={colors.primary} />
+        <Text style={styles.timingCompletedLabel}>
+          Completado a las {formatSantiagoTime(execution.completedAt!)}
+          {execution.durationSeconds !== undefined
+            ? ` · ${Math.round(execution.durationSeconds / 60)} min`
+            : ""}
+          {execution.rpe !== undefined ? ` · RPE ${execution.rpe}` : ""}
+        </Text>
+        <Pressable accessibilityRole="button" onPress={onUndo}>
+          <Text style={styles.timingUndoLink}>Deshacer</Text>
+        </Pressable>
+      </View>
+
+      {showRpePrompt ? (
+        <View style={styles.rpePrompt}>
+          <Text style={styles.rpePromptLabel}>¿Qué tan exigente se sintió?</Text>
+          <Scale value={execution.rpe ?? 0} min={1} max={10} onChange={onSetRpe} />
+          <Pressable accessibilityRole="button" onPress={onDismissRpePrompt}>
+            <Text style={styles.rpePromptSkip}>Omitir</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -626,6 +846,8 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.sm,
   },
+  // El próximo ejercicio pendiente se destaca al completar el anterior, sin auto-iniciarlo.
+  exerciseCardHighlighted: { borderColor: colors.accent, borderWidth: 2 },
   exerciseTop: { flexDirection: "row", gap: spacing.md },
   thumb: { width: 84, height: 60, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
   thumbEmpty: { alignItems: "center", justifyContent: "center" },
@@ -650,8 +872,49 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginTop: spacing.xs,
   },
-  checkboxRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: TOUCH_TARGET, flex: 1 },
-  checkboxLabel: { ...typography.caption, color: colors.textMuted },
+  timingRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flexWrap: "wrap" },
+  timingSkipped: { ...typography.caption, color: colors.textFaint },
+
+  startExerciseButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    minHeight: TOUCH_TARGET,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+  },
+  startExerciseButtonText: { ...typography.bodyStrong, color: colors.onPrimary },
+
+  timingActiveBlock: { gap: spacing.sm },
+  timingActiveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.accent },
+  timingActiveLabel: { ...typography.caption, color: colors.accent, fontWeight: "700", flex: 1 },
+  completeExerciseButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    minHeight: TOUCH_TARGET,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+  },
+  completeExerciseButtonText: { ...typography.bodyStrong, color: colors.onPrimary },
+
+  timingCompletedBlock: { gap: spacing.sm },
+  timingCompletedLabel: { ...typography.caption, color: colors.textMuted, flex: 1 },
+  timingUndoLink: { ...typography.caption, color: colors.accent, fontWeight: "700" },
+
+  rpePrompt: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  rpePromptLabel: { ...typography.caption, color: colors.textMuted },
+  rpePromptSkip: { ...typography.caption, color: colors.textFaint, textDecorationLine: "underline" },
+
   techniqueButton: {
     flexDirection: "row",
     alignItems: "center",
