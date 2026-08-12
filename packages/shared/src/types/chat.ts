@@ -6,40 +6,46 @@ import { wellnessNoteSchema } from "./wellness";
 /**
  * Contrato del chat entre la app y el backend.
  *
- * La respuesta del agente no es sólo texto: viene descompuesta en conclusión,
- * chips de métricas, interpretación y recomendación, para que la UI pueda
- * renderizar tarjetas en vez de un muro de Markdown.
+ * El Coach responde como una conversación, no como un informe: `content` es
+ * la respuesta completa en prosa natural. `dataSources`/`suggestedActions`/
+ * `followUpQuestion` son metadata liviana para la UI (qué datos se usaron,
+ * qué acciones ofrecer, si quedó una pregunta pendiente) — nunca campos que
+ * fragmenten la respuesta en secciones visuales separadas.
  */
 
 export const chatRoleSchema = z.enum(["user", "assistant", "system"]);
 
-/** Chip de métrica: "Sueño · 6 h 42 min". */
-export const metricChipSchema = z.object({
+/**
+ * Referencia a un dato que el Coach realmente usó para responder — se
+ * calcula en el backend a partir de qué tools se llamaron ese turno, nunca
+ * se le confía al modelo qué dice haber usado. Alimenta "Ver datos
+ * utilizados"; las métricas completas siguen viviendo en Estado.
+ */
+export const chatDataSourceSchema = z.object({
+  type: z.enum(["garmin", "training_session", "user_feedback", "training_history"]),
   label: z.string().min(1),
-  value: z.string().min(1),
-  /** Matiza el color del chip según si la métrica juega a favor o en contra. */
-  tone: z.enum(["neutral", "good", "warning", "bad"]).default("neutral"),
+  /** Valor corto ya formateado para mostrar en el detalle, ej. "67 min 57 s" o "RPE 1/10". */
+  detail: z.string().optional(),
 });
 
-/**
- * Distinción obligatoria entre dato, interpretación y recomendación.
- * La UI las renderiza en bloques visualmente separados.
- */
-export const coachAnalysisSchema = z.object({
-  /** Conclusión principal, una frase. */
-  headline: z.string().min(1),
-  metrics: z.array(metricChipSchema).default([]),
-  /** Qué significan los datos, marcado como lectura y no como hecho. */
-  interpretation: z.string().optional(),
-  /** Qué hacer al respecto. */
-  recommendation: z.string().optional(),
-  /** Periodo analizado. Obligatorio cuando se habla de datos del usuario. */
-  period: z.string().optional(),
-  lastSyncAt: z.string().optional(),
-  /** Métricas consultadas que no existían. */
-  unavailableMetrics: z.array(z.string()).default([]),
-  dataSource: z.enum(["mock", "garmin-mcp", "agent-endpoint"]).optional(),
+export type ChatDataSource = z.infer<typeof chatDataSourceSchema>;
+
+/** Acción contextual bajo la respuesta — máximo 3 por mensaje, sólo si son relevantes. */
+export const suggestedActionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  action: z.enum([
+    "adjust_next_session",
+    "open_session",
+    "compare_session",
+    "show_used_data",
+    "open_status",
+  ]),
+  /** Sesión/plan al que apunta la acción, cuando aplica (open_session/adjust_next_session/compare_session). */
+  targetId: z.string().optional(),
 });
+
+export type SuggestedAction = z.infer<typeof suggestedActionSchema>;
 
 export const planProposalSchema = z.object({
   plan: trainingPlanSchema,
@@ -52,7 +58,10 @@ export const chatMessageSchema = z.object({
   role: chatRoleSchema,
   content: z.string(),
   createdAt: z.string(),
-  analysis: coachAnalysisSchema.optional(),
+  dataSources: z.array(chatDataSourceSchema).default([]),
+  suggestedActions: z.array(suggestedActionSchema).default([]),
+  /** Si el Coach terminó con una pregunta, queda acá también (además de al final de `content`) para que el próximo turno pueda usarla como contexto. */
+  followUpQuestion: z.string().optional(),
   planProposal: planProposalSchema.optional(),
   /** Marca los mensajes generados con datos simulados. */
   isDemoData: z.boolean().optional(),
@@ -173,8 +182,6 @@ export const chatResponseSchema = z.object({
 });
 
 export type ChatRole = z.infer<typeof chatRoleSchema>;
-export type MetricChip = z.infer<typeof metricChipSchema>;
-export type CoachAnalysis = z.infer<typeof coachAnalysisSchema>;
 export type PlanProposal = z.infer<typeof planProposalSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type AthleteProfile = z.infer<typeof athleteProfileSchema>;

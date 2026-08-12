@@ -1,13 +1,14 @@
 import OpenAI from "openai";
+import { z } from "zod";
 import {
   buildCatalogPrompt,
   CATALOG_IDS,
-  coachAnalysisSchema,
   COACH_BASE_INSTRUCTIONS,
   COACH_OPERATIONAL_RULES,
   fallbackGuidance,
   looksLikePlanRequest,
   performanceGuidanceSchema,
+  suggestedActionSchema,
   validateTrainingPlan,
   type ChatMessage,
   type ChatRequest,
@@ -22,28 +23,43 @@ import { getTrainingHistoryTool, getTrainingRecordTool } from "./training-histor
 import { config } from "../config";
 
 /** Tools de sólo información: el modelo necesita su resultado para seguir, no son terminales. */
-const INFO_TOOL_NAMES = new Set(["get_training_history", "get_training_record", "get_historical_metrics"]);
+const INFO_TOOL_NAMES = new Set([
+  "get_current_status",
+  "get_training_history",
+  "get_training_record",
+  "get_historical_metrics",
+]);
 /** Tope de vueltas de tool-calling, para no quedar en loop si el modelo insiste en pedir info. */
 const MAX_TOOL_TURNS = 4;
+
+const suggestActionsArgsSchema = z.object({
+  actions: z.array(suggestedActionSchema).max(3).default([]),
+  followUpQuestion: z.string().optional(),
+});
 
 /**
  * Coach real sobre OpenAI.
  *
  * Verificado contra la API real (requiere `OPENAI_API_KEY`): `propose_training_plan`
- * y `report_metrics` el 2026-08-05, y el loop de tool-calling de
- * `get_training_history`/`get_training_record` el 2026-08-06 (el modelo pidió
- * el historial, recibió el resultado en la segunda vuelta y lo usó para
- * distinguir "iniciada" de "completada" sin inventar el vínculo con Garmin).
- * Con `MOCK_MODE=true` esta clase no se instancia.
+ * el 2026-08-05, y el loop de tool-calling de `get_training_history`/
+ * `get_training_record` el 2026-08-06 (el modelo pidió el historial, recibió
+ * el resultado en la segunda vuelta y lo usó para distinguir "iniciada" de
+ * "completada" sin inventar el vínculo con Garmin). Con `MOCK_MODE=true` esta
+ * clase no se instancia.
  *
  * El plan nunca se reconstruye leyendo Markdown: llega por la tool
  * `propose_training_plan` y se valida con Zod antes de devolverlo.
  *
- * `get_training_history`/`get_training_record` son tools de información: a
- * diferencia de `propose_training_plan`/`report_metrics` (cuyos argumentos
- * SON la respuesta), el modelo necesita el resultado de vuelta para poder
- * responder — por eso `reply()` hace un loop real de tool-calling en vez de
- * resolver todo en una sola vuelta.
+ * La respuesta conversacional (`content`) viene siempre del texto libre del
+ * modelo, nunca de una tool — el Coach no responde como informe. Las tools de
+ * información (`get_current_status`, `get_training_history`,
+ * `get_training_record`, `get_historical_metrics`) existen para que el
+ * modelo pida datos bajo demanda: a diferencia de `propose_training_plan`
+ * (cuyos argumentos SON la respuesta), el modelo necesita su resultado de
+ * vuelta para poder responder — por eso `reply()` hace un loop real de
+ * tool-calling en vez de resolver todo en una sola vuelta. `dataSources` se
+ * construye después, a partir de qué tools de información se llamaron
+ * realmente ese turno — nunca se le confía al modelo qué dice haber usado.
  */
 export class OpenAIAgentGateway implements AgentGateway {
   readonly name = "OpenAIAgentGateway";
@@ -75,13 +91,17 @@ export class OpenAIAgentGateway implements AgentGateway {
 
     const tools: OpenAI.ChatCompletionTool[] = [
       { type: "function", function: PROPOSE_TRAINING_PLAN_TOOL },
-      { type: "function", function: REPORT_METRICS_TOOL },
+      { type: "function", function: SUGGEST_ACTIONS_TOOL },
+      { type: "function", function: GET_CURRENT_STATUS_TOOL },
       { type: "function", function: GET_TRAINING_HISTORY_TOOL },
       { type: "function", function: GET_TRAINING_RECORD_TOOL },
       ...(this.historicalMetrics ? [{ type: "function", function: GET_HISTORICAL_METRICS_TOOL } as const] : []),
     ];
 
     let choice: OpenAI.ChatCompletion.Choice | undefined;
+    // Traza real de qué tools de información se llamaron este turno — de acá
+    // sale `dataSources`, nunca de lo que el modelo diga que usó.
+    const resolvedInfoCalls: Array<{ name: string; result: unknown }> = [];
 
     for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
       const completion = await this.client.chat.completions.create({ model: this.model, messages, tools });
@@ -101,7 +121,8 @@ export class OpenAIAgentGateway implements AgentGateway {
         } catch {
           // Argumentos vacíos: la tool resuelve con lo que tenga (sin filtros).
         }
-        const result = await this.resolveInfoTool(call.function.name, args, request.trainingHistory);
+        const result = await this.resolveInfoTool(call.function.name, args, request.trainingHistory, snapshot);
+        resolvedInfoCalls.push({ name: call.function.name, result });
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
     }
@@ -117,7 +138,8 @@ export class OpenAIAgentGateway implements AgentGateway {
       (call) => call.type !== "function" || !INFO_TOOL_NAMES.has(call.function.name),
     );
     let planProposal: ChatMessage["planProposal"];
-    let analysis: ChatMessage["analysis"];
+    let suggestedActions: ChatMessage["suggestedActions"] = [];
+    let followUpQuestion: string | undefined;
     const errors: string[] = [];
 
     for (const call of toolCalls) {
@@ -136,27 +158,29 @@ export class OpenAIAgentGateway implements AgentGateway {
         else errors.push(built.error);
       }
 
-      if (call.function.name === "report_metrics") {
-        const parsed = coachAnalysisSchema.safeParse(args);
+      if (call.function.name === "suggest_actions") {
+        const parsed = suggestActionsArgsSchema.safeParse(args);
+        // Fallo silencioso a propósito: las acciones son un agregado, nunca un
+        // requisito de la respuesta — que el modelo se equivoque acá no debe
+        // ensuciar `errors` ni la conversación con el usuario.
         if (parsed.success) {
-          analysis = {
-            ...parsed.data,
-            period: parsed.data.period ?? snapshot.period,
-            lastSyncAt: parsed.data.lastSyncAt ?? snapshot.lastSyncAt,
-            dataSource: parsed.data.dataSource ?? snapshot.dataSource,
-            unavailableMetrics: parsed.data.unavailableMetrics.length
-              ? parsed.data.unavailableMetrics
-              : snapshot.unavailableMetrics,
-          };
-        } else {
-          errors.push("El reporte de métricas no cumplió el formato esperado");
+          suggestedActions = parsed.data.actions;
+          followUpQuestion = parsed.data.followUpQuestion;
         }
       }
     }
 
+    const content = choice?.message?.content ?? "";
+    if (!followUpQuestion) {
+      // El modelo no llamó `suggest_actions` (o no confirmó la pregunta) pero
+      // igual puede haber terminado con una — se extrae de la última oración.
+      const trailingQuestion = content.match(/([^.!?\n]*\?)\s*$/);
+      if (trailingQuestion) followUpQuestion = trailingQuestion[1].trim();
+    }
+
     // Red de seguridad: el pedido de plan es inequívoco pero el modelo, con
-    // elección libre, decidió responder sólo con report_metrics — se verificó
-    // contra la API real que ni instrucciones explícitas evitan esto siempre
+    // elección libre, decidió responder sólo con texto — se verificó contra
+    // la API real que ni instrucciones explícitas evitan esto siempre
     // (Garmin marcando baja disposición lo empuja a advertir en vez de
     // entregar el plan). Una segunda vuelta con `propose_training_plan`
     // forzada por `tool_choice` no deja margen a esa elección.
@@ -167,13 +191,88 @@ export class OpenAIAgentGateway implements AgentGateway {
       else errors.push(forced.error);
     }
 
+    const dataSources = this.buildDataSources(resolvedInfoCalls);
+
     return {
       ...base,
-      content: choice?.message?.content ?? "",
-      analysis,
+      content,
+      dataSources,
+      suggestedActions,
+      followUpQuestion,
       planProposal,
       error: errors.length ? errors.join(" · ") : undefined,
     };
+  }
+
+  /**
+   * Convierte la traza de tools de información realmente llamadas en
+   * `dataSources` — nunca a partir de lo que el modelo reporte, siempre de
+   * los resultados reales que ya se le devolvieron. Descarta duplicados
+   * exactos (el modelo pidiendo lo mismo dos veces en el mismo turno).
+   */
+  private buildDataSources(
+    resolvedInfoCalls: Array<{ name: string; result: unknown }>,
+  ): NonNullable<ChatMessage["dataSources"]> {
+    const seen = new Set<string>();
+    const sources: NonNullable<ChatMessage["dataSources"]> = [];
+
+    for (const call of resolvedInfoCalls) {
+      const source = this.describeDataSource(call.name, call.result);
+      if (!source) continue;
+      const key = `${source.type}::${source.label}::${source.detail ?? ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sources.push(source);
+    }
+
+    return sources;
+  }
+
+  private describeDataSource(name: string, result: unknown): NonNullable<ChatMessage["dataSources"]>[number] | undefined {
+    if (name === "get_current_status") {
+      const status = result as { trainingReadiness?: { score?: number }; sleep?: { score?: number } } | null;
+      const detail =
+        status?.trainingReadiness?.score !== undefined
+          ? `Training Readiness ${status.trainingReadiness.score}/100`
+          : status?.sleep?.score !== undefined
+            ? `Sueño ${status.sleep.score}/100`
+            : undefined;
+      return { type: "garmin", label: "Tu estado de hoy", detail };
+    }
+
+    if (name === "get_training_record") {
+      const entry = result as {
+        plannedTitle?: string;
+        garminDurationSeconds?: number;
+        actualRpe?: number;
+        garminAverageHeartRate?: number;
+        garminAerobicTrainingEffect?: number;
+      } | null;
+      if (!entry) return undefined;
+      const detail = [
+        entry.garminDurationSeconds !== undefined
+          ? `${Math.floor(entry.garminDurationSeconds / 60)} min ${Math.round(entry.garminDurationSeconds % 60)} s`
+          : undefined,
+        entry.actualRpe !== undefined ? `RPE ${entry.actualRpe}/10` : undefined,
+        entry.garminAverageHeartRate !== undefined ? `${entry.garminAverageHeartRate} ppm promedio` : undefined,
+        entry.garminAerobicTrainingEffect !== undefined
+          ? `Training Effect ${entry.garminAerobicTrainingEffect} aeróbico`
+          : undefined,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(" · ");
+      return { type: "training_session", label: entry.plannedTitle ?? "Sesión", detail: detail || undefined };
+    }
+
+    if (name === "get_training_history") {
+      return { type: "training_history", label: "Historial de entrenamiento" };
+    }
+
+    if (name === "get_historical_metrics") {
+      return { type: "garmin", label: "Métricas históricas" };
+    }
+
+    return undefined;
   }
 
   /**
@@ -319,17 +418,33 @@ export class OpenAIAgentGateway implements AgentGateway {
   }
 
   /**
-   * Resuelve una tool de información. `get_training_history`/`get_training_record`
-   * son puras (sólo filtran el `trainingHistory` que ya llegó en la petición);
-   * `get_historical_metrics` sí hace I/O real contra Garmin, por eso el método
-   * es async. Ninguna se inyecta de antemano en el prompt — sólo llegan al
-   * modelo si las pide explícitamente.
+   * Resuelve una tool de información. `get_current_status` sólo expone el
+   * `snapshot` que `reply()` ya recibió como parámetro — no dispara una
+   * segunda llamada a Garmin, sólo decide si el modelo llega a verlo.
+   * `get_training_history`/`get_training_record` son puras (sólo filtran el
+   * `trainingHistory` que ya llegó en la petición); `get_historical_metrics`
+   * sí hace I/O real contra Garmin, por eso el método es async. Ninguna se
+   * inyecta de antemano en el prompt — sólo llegan al modelo si las pide
+   * explícitamente.
    */
   private async resolveInfoTool(
     name: string,
     args: unknown,
     trainingHistory: ChatRequest["trainingHistory"],
+    snapshot: GarminSnapshot,
   ): Promise<unknown> {
+    if (name === "get_current_status") {
+      return {
+        sleep: snapshot.sleep,
+        hrv: snapshot.hrv,
+        bodyBattery: snapshot.bodyBattery,
+        trainingReadiness: snapshot.trainingReadiness,
+        restingHeartRate: snapshot.restingHeartRate,
+        stress: snapshot.stress,
+        unavailableMetrics: snapshot.unavailableMetrics,
+        isDemoData: snapshot.dataSource === "mock",
+      };
+    }
     if (name === "get_training_history") {
       const parsed = args as { startDate?: string; endDate?: string; includeGarminMetrics?: boolean };
       return getTrainingHistoryTool(trainingHistory, parsed);
@@ -351,42 +466,20 @@ export class OpenAIAgentGateway implements AgentGateway {
     return null;
   }
 
-  /** Contexto factual. Las métricas ausentes van explícitas para que no se inventen. */
+  /**
+   * Contexto factual liviano — a propósito ya NO vuelca el snapshot completo
+   * de Garmin: eso ahora se pide bajo demanda con `get_current_status`, para
+   * que la consulta a Garmin sea invisible en la conversación y sólo ocurra
+   * cuando de verdad ayuda a la respuesta.
+   */
   private buildContext(request: ChatRequest, snapshot: GarminSnapshot): string {
     const profile = request.athleteProfile;
     const logs = request.recentLogs.slice(-5);
 
     return [
-      `Datos Garmin disponibles (fuente: ${snapshot.dataSource}, periodo: ${snapshot.period}, última sincronización: ${snapshot.lastSyncAt}):`,
-      JSON.stringify(
-        {
-          sleep: snapshot.sleep,
-          hrv: snapshot.hrv,
-          restingHeartRate: snapshot.restingHeartRate,
-          bodyBattery: snapshot.bodyBattery,
-          stress: snapshot.stress,
-          trainingReadiness: snapshot.trainingReadiness,
-          trainingStatus: snapshot.trainingStatus,
-          vo2max: snapshot.vo2max,
-          fitnessAge: snapshot.fitnessAge,
-          dailyActivity: snapshot.dailyActivity,
-          respiration: snapshot.respiration,
-          spo2: snapshot.spo2,
-          hillScore: snapshot.hillScore,
-          enduranceScore: snapshot.enduranceScore,
-          cyclingFtpWatts: snapshot.cyclingFtpWatts,
-          lactateThresholdBpm: snapshot.lactateThresholdBpm,
-          recentActivities: snapshot.recentActivities,
-          weeklyTrends: snapshot.weeklyTrends,
-        },
-        null,
-        1,
-      ),
-      snapshot.unavailableMetrics.length
-        ? `Métricas NO disponibles (dilo explícitamente si te preguntan por ellas, no las estimes): ${snapshot.unavailableMetrics.join(", ")}`
-        : "",
+      `Tienes \`get_current_status\` para ver el estado de hoy del usuario (sueño, HRV, Body Battery, Training Readiness, FC en reposo, estrés) y \`get_historical_metrics\`/\`get_training_history\`/\`get_training_record\` para historial — pídelas sólo si la pregunta realmente las necesita, no las consultes "porque están disponibles".`,
       snapshot.dataSource === "mock"
-        ? "IMPORTANTE: estos son datos de demostración. Adviértelo y no los presentes como reales."
+        ? "IMPORTANTE: la cuenta de Garmin conectada es de demostración. Si consultas el estado, adviértelo de forma natural y no lo presentes como datos reales."
         : "",
       profile ? `Perfil del atleta ya conocido (no vuelvas a preguntar esto): ${JSON.stringify(profile)}` : "",
       logs.length ? `Sesiones registradas recientemente: ${JSON.stringify(logs)}` : "El usuario aún no registra sesiones.",
@@ -526,37 +619,57 @@ const PROPOSE_TRAINING_PLAN_TOOL = {
   },
 } as const;
 
-/** Schema JSON de `report_metrics`: separa dato, interpretación y recomendación. */
-const REPORT_METRICS_TOOL = {
-  name: "report_metrics",
+/**
+ * Schema JSON de `suggest_actions`: NO forzada, el modelo la llama sólo
+ * cuando hay 0-3 acciones contextuales relevantes o quiere confirmar una
+ * pregunta de seguimiento — nunca reemplaza el texto natural de la
+ * respuesta, viaja aparte de él.
+ */
+const SUGGEST_ACTIONS_TOOL = {
+  name: "suggest_actions",
   description:
-    "Entrega una respuesta sobre datos del usuario separando conclusión, métricas, interpretación y recomendación. Úsala siempre que hables de sus métricas.",
+    "Ofrece hasta 3 acciones contextuales relacionadas con tu respuesta (sólo si de verdad son relevantes) y, si terminaste con una pregunta, confírmala en followUpQuestion. No la llames en cada turno — sólo cuando aporte.",
   parameters: {
     type: "object",
     additionalProperties: false,
-    required: ["headline", "metrics", "period", "lastSyncAt"],
     properties: {
-      headline: { type: "string", description: "Conclusión principal, una frase" },
-      metrics: {
+      actions: {
         type: "array",
+        maxItems: 3,
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["label", "value"],
+          required: ["id", "label", "action"],
           properties: {
+            id: { type: "string" },
             label: { type: "string" },
-            value: { type: "string" },
-            tone: { type: "string", enum: ["neutral", "good", "warning", "bad"] },
+            action: {
+              type: "string",
+              enum: ["adjust_next_session", "open_session", "compare_session", "show_used_data", "open_status"],
+            },
+            targetId: { type: "string", description: "Id de la sesión o plan al que apunta la acción, si aplica" },
           },
         },
       },
-      interpretation: { type: "string", description: "Lectura de los datos, marcada como interpretación" },
-      recommendation: { type: "string", description: "Acción concreta" },
-      period: { type: "string", description: "Periodo analizado" },
-      lastSyncAt: { type: "string", description: "Fecha de última sincronización" },
-      unavailableMetrics: { type: "array", items: { type: "string" } },
+      followUpQuestion: {
+        type: "string",
+        description: "La pregunta con la que terminaste tu respuesta, si hiciste una",
+      },
     },
   },
+} as const;
+
+/**
+ * Schema JSON de `get_current_status`: tool de INFORMACIÓN sobre el estado de
+ * HOY (sueño, HRV, Body Battery, Training Readiness, FC en reposo, estrés).
+ * Reemplaza el volcado automático del snapshot en el prompt — la consulta a
+ * Garmin ahora es invisible y sólo ocurre si el modelo la pide.
+ */
+const GET_CURRENT_STATUS_TOOL = {
+  name: "get_current_status",
+  description:
+    "Devuelve el estado actual del usuario (sueño, HRV, Body Battery, Training Readiness, FC en reposo, estrés). Úsala sólo cuando la pregunta dependa de su recuperación o disposición para entrenar hoy — no la llames para preguntas generales, de técnica, o que ya tienen suficiente contexto en la conversación.",
+  parameters: { type: "object", additionalProperties: false, properties: {} },
 } as const;
 
 /**

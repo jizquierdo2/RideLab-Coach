@@ -1,21 +1,9 @@
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
-import type { ChatMessage, CoachAnalysis, PlanProposal } from "@ridelab/shared";
-import { Badge, Button, Card, MetricChip } from "./ui";
-import { Icon, type IconRole } from "./icon";
-import { colors, featureCardToneColor, radius, spacing, typography } from "../theme";
-
-/** Formatea una marca ISO como "hoy 08:14" o "04 ago 08:14". */
-function formatSync(iso: string | undefined): string {
-  if (!iso) return "sin fecha";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "sin fecha";
-  const today = new Date();
-  const sameDay = date.toDateString() === today.toDateString();
-  const time = date.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
-  if (sameDay) return `hoy ${time}`;
-  return `${date.toLocaleDateString("es-CL", { day: "2-digit", month: "short" })} ${time}`;
-}
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import type { ChatMessage, PlanProposal, SuggestedAction } from "@ridelab/shared";
+import { Badge, Button, Card } from "./ui";
+import { Icon } from "./icon";
+import { colors, radius, spacing, TOUCH_TARGET, typography } from "../theme";
 
 /** Turno del usuario. */
 export function UserBubble({ text }: { text: string }) {
@@ -28,32 +16,26 @@ export function UserBubble({ text }: { text: string }) {
   );
 }
 
-type Tone = "good" | "warning" | "bad";
-
-/** El tono más severo presente entre los chips de métrica, para colorear la tarjeta de énfasis. */
-function dominantTone(analysis: CoachAnalysis): Tone {
-  const tones = analysis.metrics.map((m) => m.tone);
-  if (tones.includes("bad")) return "bad";
-  if (tones.includes("warning")) return "warning";
-  return "good";
-}
-
-const RECOMMENDATION_ICON: Record<Tone, IconRole> = {
-  good: "checkCircleFilled",
-  warning: "trendingDown",
-  bad: "warning",
-};
-
 /**
- * Respuesta analítica del coach.
- *
- * Renderiza en bloques separados lo que la especificación exige distinguir:
- * conclusión, métricas, interpretación, recomendación y procedencia del dato.
- * El headline vive en una tarjeta de énfasis (grafito); todo lo demás queda
- * sobre superficies claras para no mezclar dos niveles de contraste.
+ * Respuesta del coach: una sola burbuja conversacional, sin secciones
+ * tituladas ni chips de métricas — el mensaje se siente como chat, no como
+ * una pantalla de resultados. Los datos que realmente se usaron quedan
+ * detrás de "Ver datos utilizados" (discreto, aparte de las acciones
+ * sugeridas); las métricas completas siguen viviendo en Estado.
  */
-export function CoachAnalysisCard({ analysis }: { analysis: CoachAnalysis }) {
-  const tone = dominantTone(analysis);
+export function CoachReplyBubble({
+  message,
+  onAction,
+  onShowDataUsed,
+}: {
+  message: ChatMessage;
+  onAction: (action: SuggestedAction) => void;
+  onShowDataUsed: () => void;
+}) {
+  if (!message.content) return null;
+
+  const actions = message.suggestedActions ?? [];
+  const hasDataSources = (message.dataSources?.length ?? 0) > 0;
 
   return (
     <View style={styles.coachWrap}>
@@ -64,49 +46,31 @@ export function CoachAnalysisCard({ analysis }: { analysis: CoachAnalysis }) {
         <Text style={styles.coachName}>Coach</Text>
       </View>
 
-      <View style={styles.featureCard}>
-        <View style={styles.featureHeadRow}>
-          <View style={[styles.toneDot, { backgroundColor: featureCardToneColor[tone] }]} />
-          <Text style={styles.headline}>{analysis.headline}</Text>
-        </View>
+      <View style={styles.replyBubble}>
+        <Text style={styles.replyText}>{message.content}</Text>
       </View>
 
-      {analysis.metrics.length > 0 ? (
-        <View style={styles.chips}>
-          {analysis.metrics.map((metric) => (
-            <MetricChip key={metric.label} label={metric.label} value={metric.value} tone={metric.tone} />
+      {actions.length > 0 ? (
+        <View style={styles.actionsRow}>
+          {actions.slice(0, 3).map((action) => (
+            <Pressable
+              key={action.id}
+              accessibilityRole="button"
+              onPress={() => onAction(action)}
+              style={styles.actionChip}
+            >
+              <Text style={styles.actionChipText}>{action.label}</Text>
+            </Pressable>
           ))}
         </View>
       ) : null}
 
-      {analysis.interpretation ? (
-        <Card style={styles.block}>
-          <Text style={styles.blockLabel}>Interpretación</Text>
-          <Text style={styles.blockText}>{analysis.interpretation}</Text>
-        </Card>
+      {hasDataSources ? (
+        <Pressable accessibilityRole="button" onPress={onShowDataUsed} style={styles.dataUsedLink}>
+          <Icon role="info" size={14} color={colors.textFaint} />
+          <Text style={styles.dataUsedLinkText}>Ver datos utilizados</Text>
+        </Pressable>
       ) : null}
-
-      {analysis.recommendation ? (
-        <View style={styles.recommendationRow}>
-          <Icon role={RECOMMENDATION_ICON[tone]} size={20} color={colors.primary} />
-          <Text style={styles.recommendationText}>{analysis.recommendation}</Text>
-        </View>
-      ) : null}
-
-      {analysis.unavailableMetrics.length > 0 ? (
-        <View style={styles.block}>
-          <Text style={styles.blockLabel}>Sin datos</Text>
-          <Text style={styles.unavailable}>{analysis.unavailableMetrics.join(" · ")}</Text>
-        </View>
-      ) : null}
-
-      <View style={styles.provenance}>
-        <Icon role="info" size={12} color={colors.textFaint} />
-        <Text style={styles.provenanceText}>
-          {analysis.period ? `Periodo: ${analysis.period}` : "Periodo no declarado"} · Actualizado:{" "}
-          {formatSync(analysis.lastSyncAt)}
-        </Text>
-      </View>
     </View>
   );
 }
@@ -196,17 +160,8 @@ function PlanFact({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** Texto plano del coach: preguntas, avisos de seguridad. */
-export function CoachTextCard({ text }: { text: string }) {
-  return (
-    <Card style={styles.textCard}>
-      <Text style={styles.plainText}>{text}</Text>
-    </Card>
-  );
-}
-
 export function isEmptyMessage(message: ChatMessage): boolean {
-  return !message.content && !message.analysis && !message.planProposal;
+  return !message.content && !message.planProposal;
 }
 
 const styles = StyleSheet.create({
@@ -233,48 +188,31 @@ const styles = StyleSheet.create({
   },
   coachName: { ...typography.caption, color: colors.text },
 
-  featureCard: {
-    backgroundColor: colors.featureCard,
+  replyBubble: {
+    backgroundColor: colors.surface,
     borderRadius: radius.lg,
+    borderBottomLeftRadius: radius.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
     padding: spacing.lg,
   },
-  featureHeadRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  toneDot: { width: 10, height: 10, borderRadius: 5, marginTop: 6 },
-  headline: { ...typography.headlineMd, color: colors.onFeatureCard, flex: 1 },
+  replyText: { ...typography.body, color: colors.text, lineHeight: 22 },
 
-  textCard: { marginBottom: spacing.md },
-  plainText: { ...typography.body, color: colors.text },
-
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-
-  block: { gap: 3 },
-  blockLabel: {
-    ...typography.caption,
-    color: colors.textFaint,
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-  },
-  blockText: { ...typography.body, color: colors.textMuted },
-  unavailable: { ...typography.caption, color: colors.textFaint, fontStyle: "italic" },
-
-  recommendationRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: spacing.sm,
-    backgroundColor: colors.surfaceContainer,
-    borderRadius: radius.md,
-    padding: spacing.md,
-  },
-  recommendationText: { ...typography.body, color: colors.text, flex: 1 },
-
-  provenance: {
-    flexDirection: "row",
+  actionsRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  actionChip: {
+    minHeight: TOUCH_TARGET,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: spacing.md,
     alignItems: "center",
     justifyContent: "center",
-    gap: spacing.xs,
-    paddingTop: spacing.xs,
   },
-  provenanceText: { ...typography.caption, color: colors.textFaint, textAlign: "center" },
+  actionChipText: { ...typography.caption, color: colors.accent, fontWeight: "700" },
+
+  dataUsedLink: { flexDirection: "row", alignItems: "center", gap: spacing.xs, minHeight: TOUCH_TARGET },
+  dataUsedLinkText: { ...typography.caption, color: colors.textFaint, textDecorationLine: "underline" },
 
   planCard: { marginBottom: spacing.md, gap: spacing.md },
   planHeaderRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md },

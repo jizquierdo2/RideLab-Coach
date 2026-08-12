@@ -59,6 +59,10 @@ export default function RootLayout() {
             options={{ title: "Vincular", presentation: "modal" }}
           />
           <Stack.Screen name="estado/all-metrics" options={{ title: "Todas las métricas" }} />
+          <Stack.Screen
+            name="chat/data-used/[messageId]"
+            options={{ title: "Datos utilizados", presentation: "modal" }}
+          />
         </Stack>
       </AppProvider>
     </SafeAreaProvider>

@@ -29,37 +29,32 @@ const fullProfile = {
 };
 
 describe("respuestas sobre métricas", () => {
-  it("responde recuperación declarando periodo, sincronización y fuente", async () => {
+  it("responde recuperación como texto conversacional, con la fuente de datos usada", async () => {
     const message = await gateway.reply(ask("¿Cómo está mi recuperación hoy?"), snapshot);
-    expect(message.analysis?.period).toBe(snapshot.period);
-    expect(message.analysis?.lastSyncAt).toBe(snapshot.lastSyncAt);
-    expect(message.analysis?.dataSource).toBe("mock");
+    expect(message.content.length).toBeGreaterThan(0);
+    expect(message.dataSources?.some((source) => source.type === "garmin")).toBe(true);
     expect(message.isDemoData).toBe(true);
   });
 
-  it("entrega chips de métricas en vez de un muro de texto", async () => {
+  it("no fragmenta la respuesta en secciones tituladas", async () => {
     const message = await gateway.reply(ask("¿Cómo está mi recuperación hoy?"), snapshot);
-    const labels = message.analysis?.metrics.map((m) => m.label) ?? [];
-    expect(labels).toContain("Sueño");
-    expect(labels).toContain("HRV");
-    expect(labels).toContain("Body Battery");
-    expect(message.content).toBe("");
+    expect(message.content).not.toMatch(/dato observado|interpretaci[óo]n|recomendaci[óo]n:/i);
   });
 
-  it("separa interpretación de recomendación", async () => {
+  it("ofrece revisar el estado como acción sugerida cuando hay readiness", async () => {
     const message = await gateway.reply(ask("¿Estoy listo para entrenar fuerte?"), snapshot);
-    expect(message.analysis?.interpretation).toBeTruthy();
-    expect(message.analysis?.recommendation).toBeTruthy();
+    expect(message.suggestedActions?.some((action) => action.action === "open_status")).toBe(true);
+    expect(message.suggestedActions?.length ?? 0).toBeLessThanOrEqual(3);
   });
 
   it("analiza la última salida usando sólo datos presentes", async () => {
     const message = await gateway.reply(ask("Analiza mi última salida en bicicleta"), snapshot);
-    expect(message.analysis?.headline).toContain("Las Condes");
+    expect(message.content).toContain("Las Condes");
   });
 
-  it("compara contra las últimas semanas", async () => {
+  it("compara contra las últimas semanas citando la fuente de la comparación", async () => {
     const message = await gateway.reply(ask("Compárame con las últimas cuatro semanas"), snapshot);
-    expect(message.analysis?.metrics.some((m) => m.label === "Volumen")).toBe(true);
+    expect(message.dataSources?.some((source) => source.label === "Comparación de 4 semanas")).toBe(true);
   });
 });
 
@@ -74,27 +69,20 @@ describe("cuando faltan datos de Garmin", () => {
     unavailableMetrics: ["Sueño", "HRV", "Training Readiness"],
   };
 
-  it("dice explícitamente que no puede dar un veredicto", async () => {
+  it("dice explícitamente que no puede dar un veredicto, sin inventar una fuente de datos", async () => {
     const message = await gateway.reply(ask("¿Cómo está mi recuperación hoy?"), empty);
-    expect(message.analysis?.headline).toContain("No tengo");
-    expect(message.analysis?.metrics).toHaveLength(0);
-  });
-
-  it("nunca inventa métricas ausentes", async () => {
-    const message = await gateway.reply(ask("¿Cómo está mi recuperación hoy?"), empty);
-    expect(message.analysis?.unavailableMetrics).toEqual(
-      expect.arrayContaining(["Sueño", "HRV", "Training Readiness"]),
-    );
+    expect(message.content).toContain("No tengo");
+    expect(message.dataSources).toHaveLength(0);
   });
 
   it("avisa cuando no hay salidas en bicicleta", async () => {
     const message = await gateway.reply(ask("Analiza mi última salida en bicicleta"), empty);
-    expect(message.analysis?.headline).toContain("No encuentro");
+    expect(message.content).toContain("No encuentro");
   });
 
   it("no habla de progresión sin sesiones registradas", async () => {
     const message = await gateway.reply(ask("¿Estoy progresando?"), empty);
-    expect(message.analysis?.headline).toContain("no tienes sesiones registradas".slice(0, 20));
+    expect(message.content).toContain("no puedo hablar de progresión");
   });
 });
 
@@ -105,12 +93,13 @@ describe("creación de plan", () => {
     expect(message.content).toContain("objetivo");
   });
 
-  it("no vuelve a preguntar lo que ya está en el perfil", async () => {
+  it("no vuelve a preguntar lo que ya está en el perfil, y presenta el plan con un mensaje natural", async () => {
     const message = await gateway.reply(
       ask("Créame un plan funcional para MTB de dos días por semana", { athleteProfile: fullProfile }),
       snapshot,
     );
-    expect(message.content).toBe("");
+    expect(message.content.length).toBeGreaterThan(0);
+    expect(message.content).not.toMatch(/dato observado|interpretaci[óo]n/i);
     expect(message.planProposal).toBeDefined();
   });
 
@@ -177,12 +166,13 @@ describe("historial combinado (Calendario)", () => {
       snapshot,
     );
 
-    expect(message.analysis?.headline).toContain("1 de 2");
-    expect(message.analysis?.metrics.some((m) => m.label === "Actividades libres" && m.value === "1")).toBe(true);
+    expect(message.content).toContain("1 de 2");
+    expect(message.dataSources?.some((source) => source.type === "training_history")).toBe(true);
   });
 
   it("avisa cuando todavía no hay historial ejecutado, sin inventar cumplimiento", async () => {
     const message = await gateway.reply(ask("¿Cuántas sesiones completé este mes?"), snapshot);
-    expect(message.analysis?.unavailableMetrics).toContain("Historial combinado");
+    expect(message.content).toContain("Todavía no tengo sesiones ejecutadas");
+    expect(message.dataSources).toHaveLength(0);
   });
 });

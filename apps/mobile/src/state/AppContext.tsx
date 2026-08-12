@@ -277,6 +277,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         role: "user",
         content: trimmed,
         createdAt: new Date().toISOString(),
+        dataSources: [],
+        suggestedActions: [],
       };
 
       const history = [...messages, userMessage];

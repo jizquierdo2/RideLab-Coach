@@ -220,28 +220,13 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
     const create = vi
       .fn()
       .mockResolvedValueOnce({
-        // Primera vuelta libre: el modelo elige sólo advertir sobre recuperación.
+        // Primera vuelta libre: el modelo elige sólo responder en texto, advirtiendo sobre recuperación.
         choices: [
           {
             message: {
               role: "assistant",
-              content: null,
-              tool_calls: [
-                {
-                  id: "call_1",
-                  type: "function",
-                  function: {
-                    name: "report_metrics",
-                    arguments: JSON.stringify({
-                      headline: "Baja disposición hoy",
-                      metrics: [],
-                      interpretation: "Recovery time alto",
-                      recommendation: "Empieza con cargas moderadas",
-                      unavailableMetrics: [],
-                    }),
-                  },
-                },
-              ],
+              content: "Baja disposición hoy. Recovery time alto. Empieza con cargas moderadas.",
+              tool_calls: [],
             },
           },
         ],
@@ -278,8 +263,8 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
       function: { name: "propose_training_plan" },
     });
     expect(message.planProposal?.plan.title).toBe("Plan MTB Funcional");
-    // El análisis de la primera vuelta no se pierde.
-    expect(message.analysis?.headline).toBe("Baja disposición hoy");
+    // El texto de la primera vuelta no se pierde.
+    expect(message.content).toBe("Baja disposición hoy. Recovery time alto. Empieza con cargas moderadas.");
     expect(message.error).toBeUndefined();
   });
 
@@ -289,23 +274,8 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
         {
           message: {
             role: "assistant",
-            content: null,
-            tool_calls: [
-              {
-                id: "call_1",
-                type: "function",
-                function: {
-                  name: "report_metrics",
-                  arguments: JSON.stringify({
-                    headline: "Recuperación al día",
-                    metrics: [],
-                    interpretation: "Todo normal",
-                    recommendation: "Sigue tu plan",
-                    unavailableMetrics: [],
-                  }),
-                },
-              },
-            ],
+            content: "Tu recuperación está al día. Todo normal, sigue tu plan.",
+            tool_calls: [],
           },
         },
       ],
@@ -344,24 +314,21 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
     expect(create.mock.calls.length).toBeLessThanOrEqual(4);
   });
 
-  it("propose_training_plan y report_metrics siguen resolviéndose en una sola vuelta (sin tools de información)", async () => {
+  it("propose_training_plan y suggest_actions siguen resolviéndose en una sola vuelta (sin tools de información)", async () => {
     const create = vi.fn().mockResolvedValue({
       choices: [
         {
           message: {
             role: "assistant",
-            content: "",
+            content: "Tu recuperación está moderada hoy. Bajaría un poco la intensidad.",
             tool_calls: [
               {
                 id: "call_1",
                 type: "function",
                 function: {
-                  name: "report_metrics",
+                  name: "suggest_actions",
                   arguments: JSON.stringify({
-                    headline: "Recuperación moderada.",
-                    metrics: [],
-                    period: snapshot.period,
-                    lastSyncAt: snapshot.lastSyncAt,
+                    actions: [{ id: "a1", label: "Revisar mi estado", action: "open_status" }],
                   }),
                 },
               },
@@ -375,7 +342,101 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
     const message = await gateway.reply(request([], "¿Cómo está mi recuperación?"), snapshot);
 
     expect(create).toHaveBeenCalledTimes(1);
-    expect(message.analysis?.headline).toBe("Recuperación moderada.");
+    expect(message.content).toBe("Tu recuperación está moderada hoy. Bajaría un poco la intensidad.");
+    expect(message.suggestedActions).toEqual([{ id: "a1", label: "Revisar mi estado", action: "open_status" }]);
+  });
+
+  it("una pregunta general no llama get_current_status", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: "assistant", content: "El Pallof Press entrena el core anti-rotación.", tool_calls: [] } }],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    await gateway.reply(request([], "¿Para qué sirve el Pallof Press?"), snapshot);
+
+    // El modelo eligió no llamar ninguna tool de info — confirma que la tool
+    // está disponible pero es opcional, nunca forzada ni pre-resuelta.
+    expect(create).toHaveBeenCalledTimes(1);
+    const offeredTools = create.mock.calls[0][0].tools as Array<{ function: { name: string } }>;
+    expect(offeredTools.map((t) => t.function.name)).toContain("get_current_status");
+  });
+
+  it("una pregunta de recuperación que llama get_current_status construye dataSources desde el resultado real, no desde el modelo", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                { id: "call_1", type: "function", function: { name: "get_current_status", arguments: "{}" } },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { role: "assistant", content: "Hoy puedes apretar sin problema.", tool_calls: [] } }],
+      });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const message = await gateway.reply(request([], "¿Entreno fuerte hoy?"), snapshot);
+
+    expect(message.dataSources?.some((source) => source.type === "garmin" && source.label === "Tu estado de hoy")).toBe(
+      true,
+    );
+  });
+
+  it("una pregunta sobre una sesión usa get_training_record y dataSources refleja sólo esa sesión", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "get_training_record", arguments: JSON.stringify({ sessionId: "w1-d1" }) },
+                },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { role: "assistant", content: "Fue una sesión exigente.", tool_calls: [] } }],
+      });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const message = await gateway.reply(request(HISTORY, "¿Qué tal mi sesión del día 1?"), snapshot);
+
+    expect(message.dataSources).toHaveLength(1);
+    expect(message.dataSources?.[0]).toMatchObject({ type: "training_session", label: "Potencia de Empuje e Impacto" });
+  });
+
+  it("extrae followUpQuestion de la última oración cuando el modelo no llamó suggest_actions", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "Mantendría las cargas de piernas. ¿Cómo terminaron tus antebrazos: frescos o cansados?",
+            tool_calls: [],
+          },
+        },
+      ],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const message = await gateway.reply(request([], "¿Cómo estuvo mi entrenamiento?"), snapshot);
+
+    expect(message.followUpQuestion).toContain("antebrazos");
   });
 });
 

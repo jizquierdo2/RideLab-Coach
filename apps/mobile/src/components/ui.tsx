@@ -8,7 +8,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import { colors, radius, spacing, TOUCH_TARGET, toneColor, typography } from "../theme";
+import { colors, radius, spacing, TOUCH_TARGET, typography } from "../theme";
 
 /** Primitivas visuales compartidas. Sin tarjetas dentro de tarjetas. */
 
@@ -75,17 +75,6 @@ export function Button({
         </Text>
       )}
     </Pressable>
-  );
-}
-
-/** Chip de métrica: "Sueño · 6 h 42 min". */
-export function MetricChip({ label, value, tone = "neutral" }: { label: string; value: string; tone?: string }) {
-  return (
-    <View style={styles.chip}>
-      <View style={[styles.chipDot, { backgroundColor: toneColor[tone] ?? colors.neutral }]} />
-      <Text style={styles.chipLabel}>{label}</Text>
-      <Text style={styles.chipValue}>{value}</Text>
-    </View>
   );
 }
 
@@ -219,19 +208,6 @@ const styles = StyleSheet.create({
   buttonLabel: { ...typography.bodyStrong },
   buttonLabelPrimary: { color: colors.onAccent },
   buttonLabelAlt: { color: colors.accent },
-
-  chip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.pill,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-  },
-  chipDot: { width: 6, height: 6, borderRadius: 3 },
-  chipLabel: { ...typography.caption, color: colors.textMuted },
-  chipValue: { ...typography.caption, color: colors.text, fontWeight: "700" },
 
   statusDot: { width: 8, height: 8, borderRadius: 4 },
 

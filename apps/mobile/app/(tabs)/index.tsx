@@ -12,9 +12,9 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { QUICK_PROMPTS, type TrainingPlan } from "@ridelab/shared";
+import { QUICK_PROMPTS, type SuggestedAction, type TrainingPlan } from "@ridelab/shared";
 import { useApp } from "../../src/state/AppContext";
-import { CoachAnalysisCard, CoachTextCard, PlanProposalCard, UserBubble } from "../../src/components/chat";
+import { CoachReplyBubble, PlanProposalCard, UserBubble } from "../../src/components/chat";
 import { Button, Loading, Notice, StatusDot } from "../../src/components/ui";
 import { Icon, type IconRole } from "../../src/components/icon";
 import { colors, radius, spacing, TOUCH_TARGET, typography } from "../../src/theme";
@@ -79,6 +79,35 @@ export default function ChatScreen() {
       }
     },
     [savePlan, router],
+  );
+
+  /** Enruta cada acción sugerida — sólo se ofrecen las que tienen a dónde ir. */
+  const handleAction = useCallback(
+    (action: SuggestedAction) => {
+      switch (action.action) {
+        case "open_status":
+          router.push("/estado");
+          return;
+        case "open_session":
+          if (action.targetId) router.push(`/session/${action.targetId}`);
+          return;
+        case "adjust_next_session":
+          setDraft(action.targetId ? `Ajusta mi sesión "${action.targetId}": ` : "Ajusta mi próxima sesión: ");
+          return;
+        case "compare_session":
+          setDraft(
+            action.targetId
+              ? `Compara mi sesión "${action.targetId}" con la anterior: `
+              : "Compárame esta sesión con la anterior: ",
+          );
+          return;
+        case "show_used_data":
+          // El botón discreto "Ver datos utilizados" ya cubre esto — si el
+          // modelo la sugiere igual, no hay una segunda ruta que abrir.
+          return;
+      }
+    },
+    [router],
   );
 
   if (!ready) return <Loading label="Cargando tus datos…" />;
@@ -162,8 +191,11 @@ export default function ChatScreen() {
           if (message.role === "user") return <UserBubble key={message.id} text={message.content} />;
           return (
             <View key={message.id}>
-              {message.analysis ? <CoachAnalysisCard analysis={message.analysis} /> : null}
-              {message.content ? <CoachTextCard text={message.content} /> : null}
+              <CoachReplyBubble
+                message={message}
+                onAction={handleAction}
+                onShowDataUsed={() => router.push(`/chat/data-used/${message.id}`)}
+              />
               {message.planProposal ? (
                 <PlanProposalCard
                   proposal={message.planProposal}
@@ -231,7 +263,7 @@ function ThinkingIndicator({ since, onCancel }: { since: number | undefined; onC
       <ActivityIndicator color={colors.accent} />
       <View style={styles.flex}>
         <Text style={styles.thinkingLabel}>
-          El coach está revisando tus datos… {elapsed}s
+          Revisando tu entrenamiento… {elapsed}s
         </Text>
         {elapsed >= LONG_WAIT_SECONDS ? (
           <Text style={styles.thinkingHint}>
