@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type OpenAI from "openai";
-import { assessPerformance, buildDemoPerformanceSnapshotRecover, buildDemoSnapshot, type ChatRequest } from "@ridelab/shared";
+import {
+  assessPerformance,
+  buildDemoPerformanceSnapshotRecover,
+  buildDemoSnapshot,
+  emptyStructuredMemory,
+  type ChatRequest,
+} from "@ridelab/shared";
 import { OpenAIAgentGateway } from "./openai";
 
 const snapshot = buildDemoSnapshot(new Date("2026-08-05T12:00:00.000Z"));
@@ -529,5 +535,83 @@ describe("OpenAIAgentGateway — generateGuidance (Estado)", () => {
     const guidance = await gateway.generateGuidance(assessment, performanceSnapshot);
 
     expect(guidance.todayMessage).toBeTruthy();
+  });
+});
+
+describe("OpenAIAgentGateway — summarizeMemory (memoria persistente)", () => {
+  const previousSummary = emptyStructuredMemory();
+  const newMessages = [
+    { role: "user" as const, content: "quedé fresco de brazos, mantengamos la tracción" },
+    { role: "assistant" as const, content: "Perfecto, mantengo la carga de piernas y subo un poco la tracción." },
+  ];
+
+  it("usa la tool forzada y devuelve la memoria actualizada del modelo", async () => {
+    const updated = {
+      ...emptyStructuredMemory(),
+      decisions: ["mantener carga de piernas, subir levemente la tracción"],
+    };
+    const create = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              { id: "call_1", type: "function", function: { name: "update_memory_summary", arguments: JSON.stringify(updated) } },
+            ],
+          },
+        },
+      ],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const result = await gateway.summarizeMemory(previousSummary, newMessages);
+
+    expect(create.mock.calls[0][0].tool_choice).toEqual({ type: "function", function: { name: "update_memory_summary" } });
+    expect(result.decisions).toEqual(["mantener carga de piernas, subir levemente la tracción"]);
+  });
+
+  it("devuelve previousSummary sin cambios si el modelo no llama la tool esperada", async () => {
+    const previous = { ...emptyStructuredMemory(), goals: ["bajar con más control"] };
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: "assistant", content: "texto libre sin tool_calls", tool_calls: [] } }],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const result = await gateway.summarizeMemory(previous, newMessages);
+
+    expect(result).toEqual(previous);
+  });
+
+  it("devuelve previousSummary sin cambios si la llamada a la API falla", async () => {
+    const previous = { ...emptyStructuredMemory(), goals: ["bajar con más control"] };
+    const create = vi.fn().mockRejectedValue(new Error("network error"));
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+
+    const result = await gateway.summarizeMemory(previous, newMessages);
+
+    expect(result).toEqual(previous);
+  });
+
+  it("devuelve previousSummary sin cambios si la tool devuelve algo que no valida el schema", async () => {
+    const previous = { ...emptyStructuredMemory(), goals: ["bajar con más control"] };
+    const create = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              { id: "call_1", type: "function", function: { name: "update_memory_summary", arguments: JSON.stringify({ goals: "no es un array" }) } },
+            ],
+          },
+        },
+      ],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    const result = await gateway.summarizeMemory(previous, newMessages);
+
+    expect(result).toEqual(previous);
   });
 });

@@ -6,6 +6,7 @@ export * from "./types/chat";
 export * from "./types/training-history";
 export * from "./types/performance";
 export * from "./types/wellness";
+export * from "./types/memory";
 export * from "./types/exercise-execution";
 export * from "./types/garmin-time-series";
 export * from "./types/exercise-physiology";

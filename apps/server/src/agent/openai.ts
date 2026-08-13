@@ -8,6 +8,7 @@ import {
   fallbackGuidance,
   looksLikePlanRequest,
   performanceGuidanceSchema,
+  structuredMemorySchema,
   suggestedActionSchema,
   validateTrainingPlan,
   type ChatMessage,
@@ -17,6 +18,7 @@ import {
   type PerformanceAssessment,
   type PerformanceGuidance,
   type PerformanceSnapshot,
+  type StructuredMemory,
 } from "@ridelab/shared";
 import { newMessageId, type AgentGateway } from "./gateway";
 import { getTrainingHistoryTool, getTrainingRecordTool } from "./training-history-tools";
@@ -377,6 +379,47 @@ export class OpenAIAgentGateway implements AgentGateway {
     return fallbackGuidance(assessment);
   }
 
+  /**
+   * Actualiza la memoria estructurada del atleta (memoria persistente, Fase
+   * 7) — mismo patrón que `generateGuidance()`: una sola llamada forzada por
+   * `tool_choice`, validada con Zod. Si falla o el modelo devuelve algo que
+   * no valida, se devuelve `previousSummary` sin cambios — nunca se pierde
+   * lo que ya había por un fallo de esta pasada; `summarizer.ts` reintenta
+   * en la próxima ejecución.
+   */
+  async summarizeMemory(
+    previousSummary: StructuredMemory,
+    newMessages: Array<{ role: "user" | "assistant"; content: string }>,
+  ): Promise<StructuredMemory> {
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          { role: "system", content: MEMORY_SUMMARY_INSTRUCTIONS },
+          {
+            role: "user",
+            content: [
+              `Resumen estructurado actual (puede estar vacío si es la primera vez): ${JSON.stringify(previousSummary)}`,
+              `Mensajes nuevos a incorporar, de más antiguo a más reciente: ${JSON.stringify(newMessages)}`,
+            ].join("\n\n"),
+          },
+        ],
+        tools: [{ type: "function", function: UPDATE_MEMORY_SUMMARY_TOOL }],
+        tool_choice: { type: "function", function: { name: "update_memory_summary" } },
+      });
+
+      const call = completion.choices[0]?.message?.tool_calls?.[0];
+      if (call?.type === "function" && call.function.name === "update_memory_summary") {
+        const parsed = structuredMemorySchema.safeParse(JSON.parse(call.function.arguments));
+        if (parsed.success) return parsed.data;
+      }
+    } catch (error) {
+      console.warn("[openai] summarizeMemory falló, se mantiene el resumen anterior:", error instanceof Error ? error.message : error);
+    }
+
+    return previousSummary;
+  }
+
   private buildGuidanceContext(
     assessment: PerformanceAssessment,
     snapshot: PerformanceSnapshot,
@@ -729,6 +772,35 @@ const GET_HISTORICAL_METRICS_TOOL = {
     properties: {
       startDate: { type: "string", description: "YYYY-MM-DD, inicio del rango (inclusive)" },
       endDate: { type: "string", description: "YYYY-MM-DD, fin del rango (inclusive)" },
+    },
+  },
+} as const;
+
+/** Instrucciones para `summarizeMemory` — no reemplazan las reglas base del Coach. */
+const MEMORY_SUMMARY_INSTRUCTIONS = `Vas a actualizar la memoria estructurada de este atleta a partir de mensajes nuevos de la conversación que ya salieron de la ventana activa de 7 días.
+
+Parte del resumen actual y AGRÉGALE lo nuevo — no lo reescribas desde cero. Si un mensaje nuevo reemplaza explícitamente un dato anterior (el usuario cambió una meta, ajustó una carga, ya no tiene una limitación), reemplaza esa entrada en vez de dejar ambas: nunca dupliques ni contradigas dos entradas sobre lo mismo.
+
+Cada entrada es una frase corta y concreta, no un párrafo. No inventes nada que no esté respaldado por los mensajes — si no hay nada nuevo para una categoría, déjala tal como estaba.`;
+
+/** Schema JSON de `update_memory_summary`, espejo de `structuredMemorySchema`. */
+const UPDATE_MEMORY_SUMMARY_TOOL = {
+  name: "update_memory_summary",
+  description: "Entrega la memoria estructurada actualizada del atleta, en sus 9 categorías. Úsala siempre para responder.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    required: ["goals", "preferences", "limitations", "routines", "loads", "feedback", "decisions", "progress", "adjustments"],
+    properties: {
+      goals: { type: "array", items: { type: "string" }, description: "Objetivos declarados" },
+      preferences: { type: "array", items: { type: "string" }, description: "Preferencias de entrenamiento" },
+      limitations: { type: "array", items: { type: "string" }, description: "Lesiones o limitaciones físicas vigentes" },
+      routines: { type: "array", items: { type: "string" }, description: "Rutinas o hábitos recurrentes" },
+      loads: { type: "array", items: { type: "string" }, description: "Cargas o progresiones acordadas" },
+      feedback: { type: "array", items: { type: "string" }, description: "Feedback subjetivo recurrente" },
+      decisions: { type: "array", items: { type: "string" }, description: "Decisiones o ajustes acordados explícitamente" },
+      progress: { type: "array", items: { type: "string" }, description: "Progreso observado a lo largo del tiempo" },
+      adjustments: { type: "array", items: { type: "string" }, description: "Ajustes pendientes o próximos a aplicar" },
     },
   },
 } as const;

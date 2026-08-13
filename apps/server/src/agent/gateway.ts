@@ -5,6 +5,7 @@ import type {
   PerformanceAssessment,
   PerformanceGuidance,
   PerformanceSnapshot,
+  StructuredMemory,
 } from "@ridelab/shared";
 
 /**
@@ -42,6 +43,18 @@ export interface AgentGateway {
     snapshot: PerformanceSnapshot,
     subjectiveNote?: string,
   ): Promise<PerformanceGuidance>;
+
+  /**
+   * Actualiza la memoria estructurada del atleta a partir de mensajes que ya
+   * salieron de la ventana activa de 7 días — memoria persistente, Fase 7.
+   * Opcional: sólo `OpenAIAgentGateway` la implementa (sin un modelo real no
+   * hay con qué resumir); `memory/summarizer.ts` no hace nada si el gateway
+   * activo no la ofrece (ej. en modo demo).
+   */
+  summarizeMemory?(
+    previousSummary: StructuredMemory,
+    newMessages: Array<{ role: "user" | "assistant"; content: string }>,
+  ): Promise<StructuredMemory>;
 }
 
 export function newMessageId(): string {

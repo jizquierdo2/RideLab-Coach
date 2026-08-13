@@ -1,6 +1,7 @@
 import path from "node:path";
 import express from "express";
 import cors from "cors";
+import OpenAI from "openai";
 import {
   assessPerformance,
   chatRequestSchema,
@@ -17,7 +18,9 @@ import { seedGarminTokenCacheFromEnv } from "./garmin/token-seed";
 import { newMessageId } from "./agent/gateway";
 import { getMemoryDb } from "./memory/db";
 import { buildMemoryContext } from "./memory/context";
+import { embedText } from "./memory/embeddings";
 import { MemoryRepository } from "./memory/repository";
+import { summarizeIfDue, type SummarizingAgentGateway } from "./memory/summarizer";
 
 /**
  * Backend de RideLab Coach.
@@ -45,6 +48,16 @@ const agentGateway = createAgentGateway((params) => garminProvider.getHistorical
 // falla el arranque, ver config.ts): `/api/chat` sigue funcionando, sólo sin
 // recordar entre sesiones.
 const memoryRepository = config.memory.encryptionKey ? new MemoryRepository(getMemoryDb()) : undefined;
+// Cliente aparte para embeddings: no vale la pena exponer el que ya usa
+// `OpenAIAgentGateway` internamente sólo para esto.
+const embeddingsClient = config.openai.apiKey ? new OpenAI({ apiKey: config.openai.apiKey }) : undefined;
+// El resumen periódico (Fase 7) sólo corre si hay memoria habilitada, un
+// cliente de embeddings, y el gateway activo sabe resumir — sólo
+// `OpenAIAgentGateway` lo implementa; en modo demo no hay con qué resumir.
+const memorySummarizer: SummarizingAgentGateway | undefined =
+  memoryRepository && embeddingsClient && agentGateway.summarizeMemory
+    ? { summarizeMemory: (previousSummary, newMessages) => agentGateway.summarizeMemory!(previousSummary, newMessages) }
+    : undefined;
 
 registerGarminAuthRoutes(app, {
   envFilePath: path.resolve(process.cwd(), ".env"),
@@ -180,7 +193,9 @@ app.post("/api/chat", async (req, res) => {
     const snapshot = await garminProvider.getSnapshot();
     const memoryContext =
       memoryRepository && lastUserMessage
-        ? await buildMemoryContext(memoryRepository, lastUserMessage.content)
+        ? await buildMemoryContext(memoryRepository, lastUserMessage.content, {
+            embedQuery: embeddingsClient ? (text) => embedText(text, embeddingsClient) : undefined,
+          })
         : undefined;
     const message = await agentGateway.reply(parsed.data, snapshot, memoryContext);
 
@@ -195,8 +210,14 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    // TODO (Memoria Fase 7): disparar summarizeIfDue(DEFAULT_USER_ID) sin
-    // esperar la respuesta, una vez exista memory/summarizer.ts.
+    // Fire-and-forget: nunca bloquea la respuesta al usuario. Sólo corre si
+    // hace falta (gating de 7 días / 24h dentro de `summarizeIfDue`).
+    if (memoryRepository && memorySummarizer && embeddingsClient) {
+      const client = embeddingsClient;
+      void summarizeIfDue(memoryRepository, memorySummarizer, (text) => embedText(text, client)).catch((error) => {
+        console.error("[memory] summarizeIfDue lanzó un error inesperado:", error);
+      });
+    }
 
     const response: ChatResponse = {
       message,
