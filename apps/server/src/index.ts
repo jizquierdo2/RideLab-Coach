@@ -20,6 +20,7 @@ import { getMemoryDb } from "./memory/db";
 import { buildMemoryContext } from "./memory/context";
 import { embedText } from "./memory/embeddings";
 import { MemoryRepository } from "./memory/repository";
+import { registerMemoryRoutes } from "./memory/routes";
 import { summarizeIfDue, type SummarizingAgentGateway } from "./memory/summarizer";
 
 /**
@@ -68,6 +69,8 @@ registerGarminAuthRoutes(app, {
   },
   createCandidate: (email, password) => new McpGarminDataProvider(email, password),
 });
+
+registerMemoryRoutes(app, { repository: memoryRepository });
 
 /** Diagnóstico: qué está corriendo de verdad y qué falta para datos reales. */
 app.get("/api/health", async (_req, res) => {

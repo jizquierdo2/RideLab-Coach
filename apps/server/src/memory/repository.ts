@@ -80,6 +80,16 @@ interface FragmentRow {
  * hacia el resto del backend queda cifrado, y nada que entre se guarda en
  * texto plano. `dataSources`/`suggestedActions` se guardan sin cifrar (son
  * metadata de UI ya derivada, no la conversación en sí).
+ *
+ * Nunca se persisten tokens ni credenciales de Garmin/MCP: `index.ts` sólo le
+ * pasa a `saveChatMessage` el texto que el usuario escribió y el `content`/
+ * `dataSources`/`suggestedActions` que ya devolvió el agente — nunca el
+ * `GarminSnapshot` ni el `GarminDataProvider` completos. `describeDataSource`
+ * en `agent/openai.ts` (la única fuente de `dataSources`) sólo extrae valores
+ * cortos ya formateados (ej. "Training Readiness 82/100"), nunca campos
+ * crudos del snapshot. `garminConnectRequestSchema.password` (la única
+ * credencial que existe en este backend) no tiene ningún camino hacia esta
+ * clase.
  */
 export class MemoryRepository {
   constructor(
