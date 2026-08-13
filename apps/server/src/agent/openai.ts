@@ -80,12 +80,13 @@ export class OpenAIAgentGateway implements AgentGateway {
     this.client = client ?? new OpenAI({ apiKey });
   }
 
-  async reply(request: ChatRequest, snapshot: GarminSnapshot): Promise<ChatMessage> {
+  async reply(request: ChatRequest, snapshot: GarminSnapshot, memoryContext?: string): Promise<ChatMessage> {
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: COACH_BASE_INSTRUCTIONS },
       { role: "system", content: COACH_OPERATIONAL_RULES },
       { role: "system", content: buildCatalogPrompt() },
       { role: "system", content: this.buildContext(request, snapshot) },
+      ...(memoryContext ? [{ role: "system", content: memoryContext } as const] : []),
       ...request.messages.map((m) => ({ role: m.role, content: m.content }) as const),
     ];
 

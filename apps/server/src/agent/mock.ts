@@ -39,7 +39,8 @@ type MockReply = Pick<ChatMessage, "content" | "dataSources" | "suggestedActions
 export class MockAgentGateway implements AgentGateway {
   readonly name = "MockAgentGateway";
 
-  async reply(request: ChatRequest, snapshot: GarminSnapshot): Promise<ChatMessage> {
+  /** `memoryContext` no se usa: el mock es determinístico por palabra clave, no consulta memoria persistente. */
+  async reply(request: ChatRequest, snapshot: GarminSnapshot, _memoryContext?: string): Promise<ChatMessage> {
     const lastUser = [...request.messages].reverse().find((m) => m.role === "user");
     const text = (lastUser?.content ?? "").toLowerCase();
 

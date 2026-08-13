@@ -14,6 +14,10 @@ import type { GarminDataProvider } from "./garmin/provider";
 import { McpGarminDataProvider } from "./garmin/mcp";
 import { registerGarminAuthRoutes } from "./garmin/auth-routes";
 import { seedGarminTokenCacheFromEnv } from "./garmin/token-seed";
+import { newMessageId } from "./agent/gateway";
+import { getMemoryDb } from "./memory/db";
+import { buildMemoryContext } from "./memory/context";
+import { MemoryRepository } from "./memory/repository";
 
 /**
  * Backend de RideLab Coach.
@@ -36,6 +40,11 @@ let garminProvider: GarminDataProvider = createGarminProvider();
 // Resolver indirecto (no `garminProvider.getHistoricalMetrics` directo): así
 // sigue al proveedor vigente si `setProvider` lo reemplaza tras un login.
 const agentGateway = createAgentGateway((params) => garminProvider.getHistoricalMetrics(params));
+
+// Sin `MEMORY_ENCRYPTION_KEY` la memoria persistente queda deshabilitada (no
+// falla el arranque, ver config.ts): `/api/chat` sigue funcionando, sólo sin
+// recordar entre sesiones.
+const memoryRepository = config.memory.encryptionKey ? new MemoryRepository(getMemoryDb()) : undefined;
 
 registerGarminAuthRoutes(app, {
   envFilePath: path.resolve(process.cwd(), ".env"),
@@ -155,9 +164,39 @@ app.post("/api/chat", async (req, res) => {
     return;
   }
 
+  // Se persiste apenas se valida la petición, antes de llamar al agente: si
+  // el agente falla después, el turno del usuario no se pierde igual.
+  const lastUserMessage = [...parsed.data.messages].reverse().find((m) => m.role === "user");
+  if (memoryRepository && lastUserMessage) {
+    memoryRepository.saveChatMessage({
+      id: newMessageId(),
+      role: "user",
+      content: lastUserMessage.content,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
   try {
     const snapshot = await garminProvider.getSnapshot();
-    const message = await agentGateway.reply(parsed.data, snapshot);
+    const memoryContext =
+      memoryRepository && lastUserMessage
+        ? await buildMemoryContext(memoryRepository, lastUserMessage.content)
+        : undefined;
+    const message = await agentGateway.reply(parsed.data, snapshot, memoryContext);
+
+    if (memoryRepository) {
+      memoryRepository.saveChatMessage({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt,
+        dataSources: message.dataSources,
+        suggestedActions: message.suggestedActions,
+      });
+    }
+
+    // TODO (Memoria Fase 7): disparar summarizeIfDue(DEFAULT_USER_ID) sin
+    // esperar la respuesta, una vez exista memory/summarizer.ts.
 
     const response: ChatResponse = {
       message,

@@ -21,8 +21,13 @@ export interface AgentGateway {
    *
    * @param request historial, perfil del atleta y registros recientes
    * @param snapshot métricas Garmin ya resueltas por el `GarminDataProvider`
+   * @param memoryContext memoria persistente entre sesiones (resumen vigente +
+   * últimos días + fragmentos relevantes), ya compactada por
+   * `memory/context.ts#buildMemoryContext`. `undefined` si la memoria está
+   * deshabilitada (sin `MEMORY_ENCRYPTION_KEY`) o no hay nada que recordar
+   * todavía.
    */
-  reply(request: ChatRequest, snapshot: GarminSnapshot): Promise<ChatMessage>;
+  reply(request: ChatRequest, snapshot: GarminSnapshot, memoryContext?: string): Promise<ChatMessage>;
 
   /**
    * Mensaje breve del coach para la sección Estado, a partir de un

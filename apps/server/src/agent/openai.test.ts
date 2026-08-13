@@ -438,6 +438,35 @@ describe("OpenAIAgentGateway — loop de tool-calling", () => {
 
     expect(message.followUpQuestion).toContain("antebrazos");
   });
+
+  it("inyecta memoryContext como system message adicional cuando se pasa", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: "assistant", content: "Mantendría el ajuste que acordamos.", tool_calls: [] } }],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    await gateway.reply(
+      request([], "¿subo la carga hoy?"),
+      snapshot,
+      "MEMORIA DEL COACH — la semana pasada acordamos mantener la carga de piernas.",
+    );
+
+    const systemMessages = create.mock.calls[0][0].messages.filter((m: { role: string }) => m.role === "system");
+    expect(systemMessages.some((m: { content: string }) => m.content.includes("acordamos mantener la carga"))).toBe(true);
+  });
+
+  it("no agrega ningún system message extra cuando memoryContext no se pasa", async () => {
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: "assistant", content: "Ok.", tool_calls: [] } }],
+    });
+
+    const gateway = new OpenAIAgentGateway("test-key", "gpt-4o", fakeClient(create));
+    await gateway.reply(request([], "hola"), snapshot);
+
+    const messages = create.mock.calls[0][0].messages as Array<{ role: string; content: string }>;
+    // Las 4 system messages de siempre (base, reglas, catálogo, contexto) + el turno del usuario.
+    expect(messages.filter((m) => m.role === "system")).toHaveLength(4);
+  });
 });
 
 describe("OpenAIAgentGateway — generateGuidance (Estado)", () => {
